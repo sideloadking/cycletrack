@@ -1,0 +1,21 @@
+# Runtime data and caches (everything lives in the user's home by default;
+# these are the local dev overrides used for testing/preview).
+.preview_data/
+.testdata/
+.scratch_data/
+.preview_server.log
+.server_*.log
+data/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Tauri / Rust
+tauri/node_modules/
+tauri/src-tauri/target/
+tauri/src-tauri/gen/
+
+# Stray downloads
+*.tif

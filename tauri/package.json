@@ -1,0 +1,14 @@
+{
+  "name": "cycling-progress-tracker",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Native shell for the Cycling Progress Tracker",
+  "scripts": {
+    "tauri": "tauri",
+    "dev": "tauri dev",
+    "build": "tauri build"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.0.0"
+  }
+}

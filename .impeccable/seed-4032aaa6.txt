@@ -1,0 +1,129 @@
+DIRECTION CONCEPT SEED (key: 4032aaa6; mode: operate; source: api; approved pool: c3b204a1eed6; 306/564 human-approved; rerun with --scope direction --mode operate --from 4032aaa6 --candidate-count 7 to reproduce this roll against this catalog revision)
+ASSIGNED INDEX: 5
+  After ordering the grounded directions by resonance, build candidate
+  5 of your own grounded list; the assignment never points at a
+  challenger. The assignment is the roll, not a suggestion: your top-ranked
+  direction is what every run would ship, so the script decides which grounded
+  direction gets built. Each direction joins a durable visual system to a
+  concrete expression for the requested first surface, decided as one. It must
+  survive the current task plus navigation, quiet and dense content,
+  interaction and state, and a substantially different future surface. In an
+  attended run, present the assigned direction fully committed and offer
+  re-roll. You may add ONE card for your top-ranked grounded candidate when
+  it is not the assigned direction, kicker IMPECCABLE’S PICK, with an honest risk line
+  naming its familiarity; one pick card, never a ranked lineup, and the pick
+  never takes the lead position. When the assignment IS your top candidate,
+  there is no pick card. Re-roll yourself only
+  on named factual grounds, when the assignment cannot carry the product's
+  truth or task; taste is never grounds.
+  The assignment exists to refuse the model's ranking rut, never to outrank
+  the user or the brief. Never expose assignment metadata in user-facing labels.
+CHALLENGERS:
+  1. a data-sublime field, where dense barcode columns and sine lattices strobe in pure black and white
+     SOURCE ID: ikeda-datamatics
+     CREATIVE SPARK: A wall of hairline vertical bars, some black, some white, holds like a frozen barcode. Dense monospace numbers pack the margin. A single sine curve traces the lattice, and for one frame the whole field snaps to its negative.
+     SYSTEM GRAMMAR:
+       - Palette/material: Pure black and pure white only, no grey and no color; flat pixel-crisp bars, hairline rules, and monospace numerics; the occasional full-frame inversion.
+       - Type/composition: One monospace face at data density, set in tight tabular columns; barcode bar-fields and sine curves structure the page
+       - Topology/navigation: Move by data column, by frequency band, and by frame index.
+       - Controls/state: Scan, sample, and invert; selecting a column pulls its numbers into focus while the surrounding field drops to a faint bar pattern.
+       - Responsive/motion: Columns thin and drop from the edges as width shrinks; reduced-motion disables all strobing and holds a single high-contrast still.
+     WEB LEVERAGE: Render the barcode and sine lattice on canvas from a seeded sequence, stepping frames on requestAnimationFrame that halts entirely under prefers-reduced-motion.
+     QUALITY BAR: board https://impeccable.style/worlds/cards/ikeda-datamatics.webp · hero https://impeccable.style/worlds/cards/ikeda-datamatics-hero.webp
+  2. a printing darkroom under amber safelight, where enlarger beams, timed baths, and drying lines stage photographs into slow deliberate existence
+     SOURCE ID: signals-instruments-darkroom-safelight-bay
+     CREATIVE SPARK: In the developer tray, gray ghosts gather into a face; the timer ticks, and pulling the print too early is a real loss.
+     SYSTEM GRAMMAR:
+       - Palette/material: amber safelight washing every surface as the ground, wet-print silver grays deepening to black as the image ink, enamel tray white at the edges
+       - Type/composition: grease-pencil notes and printed timer digits under amber, labels sparse on bottles and trays; test strips band the field into stepped exposures
+       - Topology/navigation: work moves through fixed stations in order: compose, expose, develop, fix, wash, dry.
+       - Controls/state: progress is chemical and irreversible past marked points; test strips preview before committing.
+       - Responsive/motion: stations linearize on phones; the develop reveal is one continuous emergence, shown statically under
+     WEB LEVERAGE: Canvas-simulated development curves let previews emerge in real time before an action commits.
+     QUALITY BAR: board https://impeccable.style/worlds/cards/signals-instruments-darkroom-safelight-bay.webp · hero https://impeccable.style/worlds/cards/signals-instruments-darkroom-safelight-bay-hero.webp
+  3. a japanese sixteen-color computer screen at 640 by 400, dithered gradients built from crosshatched pixel pairs, a bordered text window docked low and a full-height portrait holding the right of the frame
+     SOURCE ID: digital-design-canon-pc98-sixteen-color-field
+     CREATIVE SPARK: a sunset built entirely out of crosshatched pixel pairs because there is no in-between color to reach for, and it works, and the text window clicks open along the bottom one cell at a time.
+     SYSTEM GRAMMAR:
+       - Palette/material: a locked sixteen-color set where every intermediate tone is an ordered dither of two of them, never a true blend
+       - Type/composition: a bitmap face on a fixed cell grid, a beveled text window docked to the lower band, and artwork owning the upper right
+       - Topology/navigation: the frame is split into fixed regions that never move, and navigation swaps region contents rather than layout
+       - Controls/state: controls are bordered menu rows, the active row inverts its cells, and unavailable rows dither to half density
+       - Responsive/motion: the pixel grid scales only by whole integers, and motion is a per-cell wipe or a palette rotation
+     WEB LEVERAGE: canvas rendering with image-rendering pixelated, integer-only responsive scaling, and palette rotation animation
+     QUALITY BAR: board https://impeccable.style/worlds/cards/digital-design-canon-pc98-sixteen-color-field.webp · hero https://impeccable.style/worlds/cards/digital-design-canon-pc98-sixteen-color-field-hero.webp
+  4. a music festival lineup sheet where every act is set in the same face and the entire hierarchy is carried by size and line breaks alone, headliners spanning the width and the smallest names packed into a justified block at the foot
+     SOURCE ID: posters-covers-sleeves-festival-lineup-poster
+     CREATIVE SPARK: No pictures at all, just names, and you can tell exactly who matters most from across the room purely by how big they are.
+     SYSTEM GRAMMAR:
+       - Palette/material: one saturated ground with a single contrasting ink, no imagery whatsoever, and the type doing every job on the sheet
+       - Type/composition: one condensed face at eight sizes, headliners spanning full width, and the long tail justified into a dense block at the foot
+       - Topology/navigation: billing is the only structure, so navigation moves down through decreasing importance
+       - Controls/state: controls are names, the active one inverts out of the ground, and sold-out days take a struck rule across their block
+       - Responsive/motion: names rebreak to keep the block justified at any width, and motion is a size step as billing changes
+     WEB LEVERAGE: responsive justified type blocks that rebreak at any width, billing-rank state, and size-step transitions
+     QUALITY BAR: board https://impeccable.style/worlds/cards/posters-covers-sleeves-festival-lineup-poster.webp · hero https://impeccable.style/worlds/cards/posters-covers-sleeves-festival-lineup-poster-hero.webp
+  5. an alphabet storm, where letters condense into words, break into weather, and reshape the landscape according to grammar
+     SOURCE ID: dream-surreal-impossible-worlds-alphabet-storm
+     CREATIVE SPARK: Black letters gather into CLOUD, burst into rain, and carve the word RIVER across white ground; changing one vowel turns the current into a field of silver ravens.
+     SYSTEM GRAMMAR:
+       - Palette/material: paper white ground, storm-letter black as both body ink and weather mass, one silver flash for words mid-transformation, rain gray for spent grammar
+       - Type/composition: a single monumental grotesk behaving as matter, kerning loosening into wind, words breaking across lines as literal weather fronts on an open field
+       - Topology/navigation: Travel between letter fronts, word formations, grammatical forces, and the landscapes they produce.
+       - Controls/state: Type, split, conjugate, and recombine language while physical consequences remain reversible.
+       - Responsive/motion: Use one word-weather event per phone viewport and preserve readable text throughout transformation.
+     WEB LEVERAGE: Text parsing, procedural particles, and semantic rules turn typed language into deterministic weather with accessible narrative descriptions.
+     QUALITY BAR: board https://impeccable.style/worlds/cards/dream-surreal-impossible-worlds-alphabet-storm.webp · hero https://impeccable.style/worlds/cards/dream-surreal-impossible-worlds-alphabet-storm-hero.webp
+  6. a tensegrity column of carbon rods and red cord, where opposing forces make a rigid body appear to inhale and lengthen
+     SOURCE ID: kinetic-sculpture-automata-tensegrity-breathing-column
+     CREATIVE SPARK: The cords tighten in sequence; black rods float apart without touching, and the column rises as if drawing a slow breath.
+     SYSTEM GRAMMAR:
+       - Palette/material: matte carbon-black rods on a pale concrete ground, red cord as the tension accent, slack members dropping to ash gray
+       - Type/composition: engineering monospaced labels with force values, annotations pinned to nodes on leader lines, layout obeys the strut network not a page grid
+       - Topology/navigation: Expose a network of tension and compression paths, letting users trace any load to its counterforce.
+       - Controls/state: Pull, release, lock, and compare members while slack, balanced, stressed, and failed states are distinct.
+       - Responsive/motion: Flatten the column into a force diagram on compact screens and substitute before-after poses for continuous breathing.
+     WEB LEVERAGE: A constraint graph can drive both spatial geometry and a semantic force diagram from the same underlying state.
+     QUALITY BAR: board https://impeccable.style/worlds/cards/kinetic-sculpture-automata-tensegrity-breathing-column.webp · hero https://impeccable.style/worlds/cards/kinetic-sculpture-automata-tensegrity-breathing-column-hero.webp
+Fuse each challenger before judging it: the challenger supplies the form
+  and its system grammar, the product supplies every fact, and clarity wins
+  conflicts. Weigh the fused result against the assigned direction on exactly
+  two axes, audience identification and product clarity. Losing to strong
+  grounded material is a valid outcome; beating a thin or tool-monoculture
+  list is the point. A fused challenger that wins both axes becomes the build.
+  Close the weighing with a verdict per challenger, decided before any
+  borrowing is considered: wins (beats the assigned direction on both axes),
+  competitive (holds one axis), or declined (loses both). A declined
+  challenger is not spent: name the one discipline of its system the assigned
+  direction lacks, and raise the assigned direction to match before
+  presenting it. A donation transfers ambition and system discipline, never
+  the challenger's clothes; one world owns the page. Write each raise as its
+  own named line on the presented direction, and carry every verdict, kept
+  line, and raise into the decision page payload.
+When you can view images, open the QUALITY BAR board and hero for any
+challenger you weigh seriously and for the world you build. They exist as a
+craft bar, the finish level and commitment the build is expected to reach,
+never as a mockup to copy; your surface serves this product, not that render.
+PRODUCT.md and explicit incumbent brand commitments constrain every direction.
+The seed never chooses exact colors, fonts, tokens, or a user preference, and
+it never permits the world and first surface to be selected independently.
+The CREATIVE SPARK is a complete visual system, not a theme or decorative
+reference. Translate every supplied system rule into the product: palette and
+material, type and composition, topology, controls and states, and adaptation.
+Keep the source's visible character, scale, rhythm, and interaction instead of
+reducing vivid grammar to generic nouns. When the source is already a credible
+interface language, commit to it across navigation, content, controls, and
+states. Otherwise keep a literal carrier only when it becomes functional.
+Ambitious motion, spatial media, or interaction is welcome when it strengthens
+the product without weakening semantics, performance, or fallback behavior.
+TELEMETRY: after the user's choice resolves, rerun this script once with
+  --kind <assigned|pick|challenger|canon> --from 4032aaa6 --scope direction --mode operate,
+  adding --chosen <challenger-id> when a dealt challenger won and keeping
+  --register <safer|bolder> when the resolved round came from a steered hand.
+  One ping per resolved attended round. The ping is anonymous, the card kind
+  plus the catalog id when one won; your grounded candidates' names never
+  leave the machine, and the ping is skipped automatically when DO_NOT_TRACK
+  or IMPECCABLE_NO_TELEMETRY is set.
+A user- or brief-pinned decision beats the roll, always.
+ASSIGNED INDEX (restated for truncated readers): 5. Build candidate
+5 of your own grounded list; seed key 4032aaa6.

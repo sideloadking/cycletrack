@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#131313" />
+  <meta name="description" content="VeloTrack Kinetic System — a local cycling performance lab for ride history, elevation, power estimates, and repeatable progress." />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%23131313'/%3E%3Cpath d='M6 23 13 9h5l-3 6h7l-7 8h-5l3-6z' fill='%23caf300'/%3E%3C/svg%3E" />
+  <title>VeloTrack · Kinetic System</title>
+  <link rel="stylesheet" href="/static/vendor/fonts/fonts.css?v=4" />
+  <link rel="stylesheet" href="/static/vendor/leaflet/leaflet.css" />
+  <link rel="stylesheet" href="/static/style.css?v=14" />
+</head>
+<body>
+  <a class="skip-link" href="#view">Skip to content</a>
+
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 28 28" fill="none">
+          <path d="M5 21.5 11.2 7h4.4l-2.4 5.3h7.8l-7.1 8.2H9.5l2.6-5H7.8z" fill="currentColor" />
+          <path d="M20.5 5.5h2v4h-2z" fill="currentColor" opacity=".55" />
+        </svg>
+      </div>
+      <div class="brand-text">
+        <div class="brand-name">VeloTrack</div>
+        <div class="brand-sub">kinetic system</div>
+      </div>
+    </div>
+
+    <div class="nav-heading">Training ledger</div>
+    <nav aria-label="Primary navigation">
+      <a href="#/dashboard" data-nav="dashboard">
+        <span class="nav-glyph" aria-hidden="true">↗</span><span>Dashboard</span><span class="nav-trail">01</span>
+      </a>
+      <a href="#/rides" data-nav="rides">
+        <span class="nav-glyph" aria-hidden="true">▱</span><span>Rides</span><span class="nav-trail">02</span>
+      </a>
+      <a href="#/import" data-nav="import">
+        <span class="nav-glyph" aria-hidden="true">＋</span><span>Import</span><span class="nav-trail">03</span>
+      </a>
+      <a href="#/records" data-nav="records">
+        <span class="nav-glyph" aria-hidden="true">★</span><span>Records</span><span class="nav-trail">04</span>
+      </a>
+      <a href="#/routes" data-nav="routes">
+        <span class="nav-glyph" aria-hidden="true">⌁</span><span>Routes</span><span class="nav-trail">05</span>
+      </a>
+      <a href="#/profile" data-nav="profile">
+        <span class="nav-glyph" aria-hidden="true">◎</span><span>Profile</span><span class="nav-trail">06</span>
+      </a>
+    </nav>
+
+    <div class="sidebar-spacer"></div>
+    <div class="sidebar-foot" id="sidebar-foot">Connecting to local engine</div>
+    <div class="sidebar-build"><span class="build-line"></span>LOCAL / PRIVATE / 01</div>
+  </aside>
+
+  <main class="content">
+    <header class="topbar">
+      <div class="topbar-title">
+        <div class="eyebrow"><span class="eyebrow-mark"></span>velocity control / local engine</div>
+        <h1 id="page-title">Dashboard</h1>
+      </div>
+      <div class="topbar-right" id="topbar-right"></div>
+    </header>
+    <div id="view" class="view"></div>
+  </main>
+
+  <div id="toast" class="toast" hidden role="status" aria-live="polite"></div>
+
+  <script src="/static/vendor/plotly.min.js"></script>
+  <script src="/static/vendor/leaflet/leaflet.js"></script>
+  <script src="/static/app.js?v=16"></script>
+</body>
+</html>

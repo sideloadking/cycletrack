@@ -1,0 +1,10 @@
+# Cycling Progress Tracker — engine dependencies.
+# The engine runs on Python 3.9+; the FIT parser, OSGB projection and TIFF
+# reader are all built in so no GIS stack (pyproj/GDAL/rasterio) is required.
+fastapi>=0.100
+uvicorn>=0.23
+numpy>=1.22
+scipy>=1.8
+requests>=2.28
+pillow>=9.0
+pydantic>=2.0
