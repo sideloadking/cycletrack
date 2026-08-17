@@ -1,238 +1,233 @@
 ---
-name: Cycling Progress Tracker
-description: A private, local cycling analytics app — honest power estimates with bands, elevation rebuilt from UK lidar, rendered as roadside signs.
+name: VeloTrack Route Atlas
+description: A private cycling performance studio rendered as a daylight route atlas — calm surfaces, measured type, and honest data materiality.
 colors:
-  ground: "#eef0ec"
-  structure: "#232a31"
-  structure-2: "#2b343d"
-  structure-line: "#37424d"
-  plate: "#ffffff"
-  plate-2: "#f5f7f2"
-  plate-3: "#ecefe7"
-  line: "#d8dcd2"
-  line-soft: "#e6e9e0"
-  ink: "#191d22"
-  muted: "#5b646e"
-  faint: "#8a939c"
-  green: "#0e7a44"
-  green-deep: "#0a5c33"
-  green-ink: "#ffffff"
-  blue: "#1b5c9e"
-  red: "#c9342b"
-  amber: "#e8a400"
-  amber-ink: "#2e2200"
-  amber-deep: "#7a5600"
+  # ground & surfaces
+  canvas: "#f4f7f4"
+  canvas-deep: "#eaf1ec"
+  surface: "#ffffff"
+  surface-soft: "#f0f5f1"
+  surface-tint: "#e7f3eb"
+  white: "#ffffff"
+  # ink ramp (all pass WCAG AA on the surfaces they sit on)
+  ink: "#17211d"
+  ink-soft: "#34423a"
+  muted: "#55655c"
+  subtle: "#5c6b63"
+  # hairlines
+  line: "#dfe7e1"
+  line-strong: "#cad7ce"
+  # graph frame
+  graph-grid: "#edf1ee"
+  graph-grid-strong: "#d3ddd6"
+  graph-cursor: "#123a28"
+  # green — confident, positive, navigational
+  green: "#1b6f4d"
+  green-deep: "#11553a"
+  green-soft: "#dff3e7"
+  green-line: "#a9cdb4"
+  green-line-soft: "#d3e7d9"
+  green-hover: "#d9f0e1"
+  # blue — cool contextual series
+  blue: "#2f67d7"
+  blue-deep: "#2453b4"
+  blue-soft: "#e7efff"
+  # orange — estimate / interpret with care
+  orange: "#bd6a1d"
+  orange-deep: "#8f4f11"
+  orange-soft: "#fff0dc"
+  # purple — secondary analytical emphasis
+  purple: "#6558bf"
+  purple-deep: "#574aa9"
+  purple-soft: "#eeecff"
+  # red — destructive actions and real errors
+  red: "#b44c4b"
+  red-deep: "#7f3332"
+  red-line: "#e7c3c3"
+  red-line-strong: "#d68d8b"
+  red-soft: "#ffebeb"
+  # canvas atmosphere
+  canvas-glow: "rgba(212,239,222,.62)"
+  # map overlays
+  map-badge-border: "rgba(213,226,216,.95)"
+  slider-thumb-shadow: "rgba(25,70,45,.26)"
+  # skeleton shimmer
+  skeleton-shimmer: "#ecf1ed"
+  # tooltip ink plate
+  tooltip-ink: "rgba(23,33,29,.97)"
+  tooltip-body: "rgba(242,247,243,.82)"
+  tooltip-shadow: "rgba(16,30,22,.3)"
+  # translucent plates & shadows (alpha varies per use)
+  plate-glass: "rgba(255,255,255,.94)"
+  shadow-tint: "rgba(28,54,39,.08)"
 typography:
   display:
-    fontFamily: "Archivo, system-ui, sans-serif"
-    fontSize: "26px"
-    fontWeight: 700
-    letterSpacing: "0.1px"
-  headline:
-    fontFamily: "Archivo, system-ui, sans-serif"
-    fontSize: "15px"
-    fontWeight: 700
-    letterSpacing: "0.2px"
+    fontFamily: "Archivo"
+    fontSize: "52px"
+    fontWeight: 800
+    letterSpacing: "-0.04em"
   body:
-    fontFamily: "Archivo, system-ui, sans-serif"
+    fontFamily: "IBM Plex Sans"
     fontSize: "14px"
     fontWeight: 400
     lineHeight: 1.55
   data:
-    fontFamily: "Archivo, system-ui, sans-serif"
-    fontSize: "30px"
-    fontWeight: 700
-    fontFeature: "tnum"
-  label:
-    fontFamily: "'IBM Plex Mono', ui-monospace, monospace"
-    fontSize: "11px"
-    fontWeight: 600
-    letterSpacing: "1.2px"
-  measurement:
-    fontFamily: "'IBM Plex Mono', ui-monospace, monospace"
+    fontFamily: "IBM Plex Mono"
     fontSize: "12px"
-    fontWeight: 400
+    fontWeight: 500
+    fontFeature: "tnum"
+  scale:
+    brand-foot: "10px"
+    caption: "11px"
+    small: "12px"
+    base: "13px"
+    body: "14px"
+    lead: "15px"
+    mobile-title: "16px"
+    section: "17px"
+    card-title: "18px"
+    feature-value: "19px"
+    panel-title: "20px"
+    dropzone-title: "23px"
+    drift-value: "23px"
+    metric-value: "25px"
+    record-value: "26px"
+    detail-title-min: "29px"
+    insight-value: "30px"
+    display-min: "32px"
+    mobile-h1: "34px"
+    feature-insight: "36px"
+    mobile-h1-460: "38px"
+    detail-title: "45px"
+    display: "52px"
 rounded:
-  sm: "6px"
-  md: "10px"
-spacing:
-  xs: "8px"
-  sm: "12px"
-  md: "14px"
-  lg: "20px"
-  xl: "24px"
-components:
-  button-primary:
-    backgroundColor: "{colors.green}"
-    textColor: "{colors.green-ink}"
-    rounded: "{rounded.sm}"
-    padding: "9px 15px"
-  button-default:
-    backgroundColor: "{colors.plate}"
-    textColor: "{colors.ink}"
-    rounded: "{rounded.sm}"
-    padding: "9px 15px"
-  button-danger:
-    backgroundColor: "{colors.plate}"
-    textColor: "{colors.red}"
-    rounded: "{rounded.sm}"
-    padding: "9px 15px"
-  input:
-    backgroundColor: "{colors.plate}"
-    textColor: "{colors.ink}"
-    rounded: "{rounded.sm}"
-    padding: "8px 10px"
-  nav-link:
-    textColor: "#b7bfc8"
-    rounded: "{rounded.sm}"
-    padding: "9px 12px"
-  nav-link-active:
-    backgroundColor: "{colors.green}"
-    textColor: "{colors.green-ink}"
-    rounded: "{rounded.sm}"
-    padding: "9px 12px"
-  card:
-    backgroundColor: "{colors.plate}"
-    rounded: "{rounded.md}"
-    padding: "18px 20px"
+  micro: "2px"
+  dot: "3px"
+  swatch: "4px"
+  leaflet: "6px"
+  control: "7px"
+  sm: "8px"
+  segmented: "9px"
+  icon: "10px"
+  brand: "11px"
+  md: "12px"
+  badge: "13px"
+  mark: "14px"
+  lg: "18px"
+  xl: "26px"
+  pill: "999px"
 ---
 
-# Design System: Cycling Progress Tracker
+# Design System: VeloTrack Route Atlas
 
-## Overview
+## North star
 
-**Creative North Star: "The Roadside Signboard"**
+VeloTrack is a **private cycling performance studio**, not a social feed and not an on-bike computer. The interface should feel like a daylight route atlas: quiet enough to study, specific enough to trust, and alive only where movement helps explain a Ride.
 
-The analysis reads like the road it came from. Confident data are permanent signs — crisp ink on sign-white, mounted on dark gantry steel. Estimates are temporary works: amber plates, and when the range is wide, drawn with diagonal hatching like a provisional road marking. Repeated routes earn route numbers. The product's honesty promise is carried by the material itself: a sign that is amber or hatched announces its own uncertainty; nothing is faked into permanence.
+The memorable signature is the **route ribbon**. It is a thin, hand-drawn route trace that appears in the overview hero, Ride library feature, Route cards, and Route comparison. It turns the product's subject into a visual language without turning the dashboard into a map wallpaper.
 
-The world is deliberately light — the daylight reference system of British roads — a decisive break from the previous night-instrument panel. Depth comes from the contrast between dark sign structure and bright sign faces, never from floating shadows. Cards are flat plates with hairline borders; the one floating element (the toast) is the only real shadow in the system.
+Clear hierarchy, generous touch targets, responsive surfaces, and material roles make the interface easy to learn. It does not mean copying another product's colors, card templates, or chrome.
 
-**Key Characteristics:**
-- Confident = permanent green sign; estimated = temporary amber; wide = hatched.
-- Flat white sign plates on a pale verge ground; dark steel gantry frame.
-- One ink; hierarchy by type size and weight, not color.
-- Transport-family letterforms (Archivo) with bold tabular numerals.
-- Honest empty states and plain-language copy throughout.
+## Material roles
 
-## Colors
+- **Canvas** (`#f4f7f4`) is the quiet page ground.
+- **Surface** (`#ffffff`) is a readable plate for a decision or a group of facts.
+- **Surface soft** (`#f0f5f1`) is used for controls, secondary panels, and local/private notes.
+- **Green** (`#1b6f4d`) means a confident, positive, or navigational state. Green is never used to hide uncertainty.
+- **Blue** (`#2f67d7`) is a cool contextual series: fitness, speed, or normalized power.
+- **Orange** (`#bd6a1d`) means an estimate or a warning about interpretation. Wide estimates use ordered diagonal hatching.
+- **Purple** (`#6558bf`) is reserved for secondary analytical emphasis, not status.
+- **Red** (`#b44c4b`) is reserved for destructive actions and actual errors.
 
-The palette is the British road-sign system: one ink, one confident green, one motorway blue, one road red, one temporary-works amber, on sign-white over a pale verge.
+### Honest data rule
 
-### Primary
-- **Primary Route Green** (#0e7a44): confident data, active navigation, primary buttons, positive signals, the LOCAL ONLY plate. White text on it at all times.
-- **Route Green Deep** (#0a5c33): hover/pressed states of the green.
-
-### Secondary
-- **Motorway Blue** (#1b5c9e): cold data series (speed, CTL/fitness), links in map attribution.
-
-### Tertiary
-- **Road Red** (#c9342b): danger only — delete actions, errors, finish markers. Never decorative.
-- **Temporary Works Amber** (#e8a400): estimates and context. Amber plates carry dark amber ink (#2e2200); as text on white use **Amber Deep** (#7a5600). Wide estimates render as the diagonal hatch.
-
-### Neutral
-- **Sign White** (#ffffff): plates, cards, inputs, sign faces.
-- **Verge Green-Grey** (#eef0ec): page ground.
-- **Gantry Steel** (#232a31): sidebar frame, with **Steel Hover** (#2b343d) and hairlines (#37424d). Sidebar text is white and muted steel greys.
-- **Sign Black** (#191d22): primary text, numerals.
-- **Road Grey** (#5b646e): secondary text, labels on white.
-- **Hairline** (#d8dcd2): 1px borders; **Faint Hairline** (#e6e9e0): chart grids and row separators.
-
-### Named Rules
-
-**The Permanent/Temporary Rule.** A number is either a permanent sign (green, solid, crisp) or a temporary works (amber; hatched when wide). If a value is estimated, it must never wear the colors of certainty. Red is reserved for danger and is not part of the confidence scale.
-
-**The No-Fake-Tone Rule.** Uncertainty is drawn as ordered diagonal hatching — never as a smooth gradient pretending precision. A hatched band is a sign still under construction.
+Every estimated value keeps its estimate tag and, when available, its band. A power estimate is never styled like a measured sensor value. A wide band is hatched; smooth gradients are not used to suggest precision.
 
 ## Typography
 
-**Display Font:** Archivo (700–800), self-hosted woff2.
-**Body Font:** Archivo (400–500).
-**Label/Measurement Font:** IBM Plex Mono (400–600) for labels, units, chips, and measurement notes.
+- **Archivo 700–800** is the display face. It is compact, sturdy, and used for page titles, Ride names, and metric values.
+- **IBM Plex Sans 400–600** is the body face. It carries explanations and controls with a neutral, readable rhythm.
+- **IBM Plex Mono 500–700** is the utility face. It carries dates, units, labels, status tags, and table values so data columns align.
 
-**Character:** A workhorse Transport-family grotesk carrying every word and numeral, like the road itself: sturdy, upright, no styling tricks. Hierarchy comes from size and weight in one ink — the way a direction sign tells you which destination matters.
-
-### Hierarchy
-- **Display** (700, 26px): page titles (topbar).
-- **Headline** (700, 15px): card titles.
-- **Body** (400, 14px/1.55): table cells, prose, buttons.
-- **Data** (700, 24–30px, tabular): hero numerals and instrument values. The numerals are the sign's content.
-- **Label** (600, 11px, uppercase, +1.2px tracking, mono): field labels, chips, table headers, readout labels.
-- **Measurement** (400, 12px, mono): band notes, range text, sidebar status.
-
-### Named Rules
-
-**The Type Floor Rule.** No functional text below 11px; body copy never below 14px. The old micro-type system (9.5–10.5px labels) is gone. Letterspacing and weight carry the instrument feel, not size.
-
-**The Size-Only Hierarchy Rule.** Emphasis is weight and size in one ink. Colored or gradient headlines are not used.
+Functional text never drops below 11px for utility labels or 12px for supporting copy; the quietest brand marking (the sidebar footer) may sit at 10px. Body copy targets 13–15px. Large values use tabular numerals and tight letter spacing. Every label tone passes WCAG AA on the surface it sits on.
 
 ## Layout
 
-Fixed 218px gantry sidebar on the left (dark steel) with the content on the right (max-width 1400px, 24–30px padding). The layout shell is a standard Operate topology: persistent nav, page title + status plate in the topbar, content plates stacked with a 14px rhythm. Cards sit on a 12-column-friendly grid with 4/3/2 column breakpoints (2-column below 1100px, 1-column below 620px). The ride readout strip is a direction sign with seven destinations (7 columns; 4 below 1100px; 2 below 620px). More space above headings than below; 8px is the smallest gap in the system.
+The desktop shell is a 252px persistent studio rail and a fluid content column capped at 1480px. The rail is white and quiet; the product does not need a dark frame to feel authoritative. On small screens, the rail becomes a 61px sticky header with a single high-value Import action.
 
-## Elevation & Depth
+Pages use this rhythm:
 
-The system is flat by construction. Depth is carried by the material contrast between dark gantry steel (sidebar, structure) and bright sign faces — never by shadows on plates. Cards, instruments, and inputs are flat white plates with 1px hairlines. The only shadow in the system is the toast, which floats over the road with a tight offset shadow (`0 4px 14px rgba(35,42,49,.2)`).
+1. **Page head** — eyebrow, plain-language thesis, short explanation, one primary action.
+2. **Hero or lead plate** — the most characteristic insight for that page.
+3. **Evidence** — charts, tables, or replay surfaces with enough context to interpret them.
+4. **Next action** — open a Ride, compare a Route, import history, or tune the profile.
 
-### Named Rules
+The grid uses 20px between plates, 24px internal padding, and 1px hairlines. Cards use 8–18px radii with 26px for the hero; micro shapes (graph bars, swatches, marker dots, controls) use the 2–7px steps. There are no decorative numbered markers unless the number is a real sequence, such as the import process.
 
-**The No-Floaty-Shadow Rule.** Plates never carry blurred drop shadows. A 1px hairline and the steel-versus-white contrast is all the depth the world needs. The floaty 30px card shadows of the previous design are banned.
+## Signature surfaces
 
-## Shapes
+### Route ribbon
 
-Sign plates are gently rounded (10px cards, 6px buttons/inputs/chips). Corners stay soft but not pill-shaped; chips use 4px. Hairlines are 1px, dashed where the road is provisional (dropzone, wide bands). The dropzone's dashed border is a road marking waiting for work. Leaflet map controls and attribution are restyled as white plates on the light CARTO tile set.
+A route ribbon is a single SVG trace with a soft under-stroke, a measured green line, and two small location nodes. It is a subject-specific signature, not a generic chart. It should remain sparse and never compete with a graph that carries real data.
 
-## Components
+### Instrument metric
 
-### Buttons
-- **Shape:** 6px radius, 1px hairline border, 9px 15px padding; min-height 44px on touch screens.
-- **Primary:** green plate, white text, 600 weight; hover deepens to #0a5c33 with a tight 3px shadow.
-- **Default:** white plate, ink text; hover borders green and tints the ground.
-- **Danger:** ink text that turns road red on hover — never a filled red plate.
+Metric plates use a small mono label, a strong Archivo value, and an optional unit. Estimated power adds an orange tag and an uncertainty track. A confidence signal is written in words as well as color.
 
-### Chips (Pills)
-- **Style:** 4px radius, 11px uppercase mono with letter-spacing, a 6px dot prefix.
-- **High/Confident:** white on primary green.
-- **Med/Context:** dark amber ink on amber.
-- **Low:** road grey on inset white with a hairline.
-- The dot is hollow for context, solid for confident.
+### Graph frame
 
-### Cards / Plates
-- **Corner Style:** 10px.
-- **Background:** sign white with a 1px hairline border; inset face #f5f7f2 for hover rows.
-- **Shadow Strategy:** none (see Elevation).
-- **Internal Padding:** 18px 20px.
+The graph grammar is a calm instrument, in the spirit of a modern data tool: the frame disappears and the data reads at a glance. Every graph is a small purpose-built SVG scene with one shared grammar across Overview, Route, and Ride pages.
 
-### Inputs / Fields
-- **Style:** white plate, 1px hairline, 6px radius, 13px Archivo.
-- **Focus:** 2px green border with a 3px soft green ring; invalid fields turn road red.
-- **Labels:** 11px uppercase mono above the field.
+- **No chart box.** There are no axis lines, no tick marks, and no vertical gridlines. The only ruling is a faint 1px horizontal hairline at each y-tick; a slightly stronger hairline marks zero on either axis.
+- **Type.** Axis values are IBM Plex Sans 500 at 11px in muted gray with tabular numerals. Axis titles are the utility face: IBM Plex Mono 600 at 11px, uppercase, tracked. Legends are HTML chips — a rounded color square plus a 12px sans label — right-aligned above the plot, shown only when a chart carries two or more series.
+- **Lines.** Data lines are 1.7–2.6px with rounded joins and caps. Sparse series (a few hundred points or fewer) are drawn as gentle monotone curves; dense telemetry stays straight. Points appear on sparse series with a white ring; hovering or seeking enlarges the point at the cursor.
+- **Bars.** Bars have a rounded top, sit at roughly 60% opacity, and rise from their baseline. Bars may carry per-point semantic color.
+- **Uncertainty.** The power band is a soft filled envelope with an ordered diagonal hatch, beneath the estimate line. Bands keep their hatching — a smooth gradient is never used to disguise a wide estimate.
+- **Y-domains.** Charts whose series carry wide bands use robust quantile domains (2–98%) so a genuinely uncertain band stays visible without crushing the signal to the bottom of the plot. The tooltip still reports the true band.
+- **Tooltip.** Hover opens a dark ink card with a small uppercase head line, then one row per series — a color dot, label, and bold tabular value — and a band line in orange-soft where the estimate carries one. It follows the cursor with clamping and flips to stay inside the plate.
+- **Cursor & hover.** The replay cursor is a solid 1.5px ink line with white-ringed dots on every series. Hover uses a dashed muted hairline instead, so seek and inspect stay visually distinct.
+- **Entrance.** A single ~500ms moment: the plot fades and rises slightly, lines draw in from left to right, bars rise from their baseline. It replays when a filter or picker redraws a chart, which makes control changes feel deliberate. Disabled under `prefers-reduced-motion`.
+- A graph title explains the question it answers, not the implementation behind it.
 
-### Instrument (Direction Sign)
-The signature component: one white plate divided into fields by hairline rules, like destinations on a large direction sign. Each field carries an 11px uppercase label and a 24–30px Archivo numeral. Estimate fields append a small amber ESTIMATED tag and an honest range band below the numeral — a green bar when tight, a diagonal-hatch bar when wide, with the range and tag printed beneath.
+## Graph and replay rules
 
-### Navigation
-- **Style:** flat list on gantry steel; 13.5px Archivo, muted steel grey.
-- **Active:** the item becomes a filled green sign with white text — no underline, no left bar.
-- **Mobile:** the sidebar folds into a top steel bar with horizontally scrolling sign links (44px touch targets).
+- Render a graph once and update only the SVG scene needed for interaction; do not recreate a charting library instance for a control change.
+- Keep the Ride timeline normalized so distance, elapsed time, HR, power, map position, and the readout share one cursor.
+- Replay movement may run at full visual speed, but graph cursor updates are throttled to a calm 30fps budget and move a single lightweight SVG cursor line.
+- The power band is a filled, hatched envelope beneath the estimate line.
+- Fixed-HR trend lines use green for the primary signal and orange markers for context or uncertainty.
+- Blue is used for a contextual comparison, never as a second confidence scale.
+- Hover text uses units and plain language: `214 W`, `band 168–274 W`, `context`.
+- Empty graphs explain what data is missing and how to create it; they never show a blank rectangle.
 
-### Map & Replay
-- **Map:** light CARTO tiles, white-plate zoom controls and attribution, green route polyline, green start marker, road-red finish marker, white-ringed green playhead.
-- **Scrubber:** green track with a white-ringed green thumb; the readout strip below is a seven-destination direction sign.
-- **Play/Pause:** a drawn SVG triangle/bars icon — never a Unicode glyph.
+## Motion
 
-## Do's and Don'ts
+The page enters with a short, low-distance rise. Cards do not float or bounce. Hover lifts are limited to clickable Route cards and primary actions. Graphs enter with one calm draw-in moment (see Graph frame). Ride replay is the one sustained animation: the map marker, readout, and chart cursors move together because the motion is the explanation.
 
-### Do:
-- **Do** render confident data as green and solid, estimates as amber, and wide ranges as diagonal hatching.
-- **Do** keep plates flat with 1px hairlines and let steel-versus-white carry depth.
-- **Do** set functional text at or above 11px and body copy at 14px.
-- **Do** use Archivo for display/body/data numerals and IBM Plex Mono for labels and measurements.
-- **Do** carry hierarchy with size and weight in one ink.
+`prefers-reduced-motion` disables page movement, shimmer, hover transforms, and replay animation transitions. Keyboard focus uses a visible blue ring with a 2px offset. All clickable rows have a keyboard equivalent.
 
-### Don't:
-- **Don't** use blurred drop shadows on cards or the old headlight-amber glow.
-- **Don't** use smooth gradients to represent uncertainty — hatch it.
-- **Don't** use colored border-left bars for active states; fill the sign instead.
-- **Don't** put functional text below 11px.
-- **Don't** use Unicode glyphs or emoji as icons — draw SVGs in the sign's own weight.
-- **Don't** use dark map tiles; the world is daylight.
+## Copy
+
+Write from the rider's side of the screen. Use "Import rides", "Open latest ride", "Save changes", and "Play replay". Prefer "estimated power" and "same roads" over internal terms. Empty states point to the next useful action. Errors state what failed without vague apologies.
+
+The product's recurring vocabulary is **Ride**, **Route**, **watts at the same heart rate**, **power estimate**, **uncertainty band**, **cardiac drift**, **local**, and **private**.
+
+## Do / don't
+
+### Do
+
+- Use daylight surfaces and green as the product anchor.
+- Let the route ribbon provide the distinctive visual memory.
+- Keep measured facts, contextual facts, and estimates visibly different.
+- Use one graph grammar across Overview, Route, and Ride pages.
+- Prefer a deep readable plate over a collection of small decorative widgets.
+- Keep every primary interaction usable at touch size and with a keyboard.
+
+### Don't
+
+- Do not use dark glass, neon glows, or gradients as the default material.
+- Do not use a color alias that makes orange estimates look confident.
+- Do not use a smooth fill to disguise a wide power band.
+- Do not use a chart title that only names a metric without stating its question.
+- Do not hide local/private status in a settings page.
+- Do not claim measured power, FTP, or TSS where the product only has an estimate.

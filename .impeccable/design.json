@@ -1,149 +1,28 @@
 {
   "schemaVersion": 2,
-  "generatedAt": "2026-08-17T14:40:00Z",
-  "title": "Design System: Cycling Progress Tracker",
+  "generatedAt": "2026-08-17T00:00:00Z",
+  "title": "Design System: VeloTrack Route Atlas",
   "extensions": {
     "colorMeta": {
-      "ground":      { "role": "neutral", "displayName": "Verge Green-Grey",  "canonical": "#eef0ec", "tonalRamp": ["#3d4440", "#5c645f", "#7b837d", "#9aa19a", "#b8bdb6", "#d6d9d2", "#eef0ec", "#fbfcfa"] },
-      "structure":   { "role": "neutral", "displayName": "Gantry Steel",      "canonical": "#232a31", "tonalRamp": ["#0a0d10", "#141a1f", "#1d242b", "#232a31", "#37424d", "#4c5966", "#677583", "#8a97a3"] },
-      "plate":       { "role": "neutral", "displayName": "Sign White",         "canonical": "#ffffff", "tonalRamp": ["#4a4f45", "#6e7469", "#92978c", "#b5b9ae", "#d3d6ce", "#e9ebe5", "#f7f8f5", "#ffffff"] },
-      "ink":         { "role": "neutral", "displayName": "Sign Black",         "canonical": "#191d22", "tonalRamp": ["#06080a", "#0d1014", "#13171c", "#191d22", "#2b323a", "#3f4852", "#57616d", "#7c8793"] },
-      "muted":       { "role": "neutral", "displayName": "Road Grey",          "canonical": "#5b646e", "tonalRamp": ["#14181c", "#22282e", "#313940", "#424b54", "#5b646e", "#7b848d", "#a0a7af", "#c9cdd2"] },
-      "green":       { "role": "primary", "displayName": "Primary Route Green", "canonical": "#0e7a44", "tonalRamp": ["#041e11", "#073a1f", "#0a562e", "#0e7a44", "#14a35c", "#2ec47c", "#63dda1", "#a3efca"] },
-      "green-deep":  { "role": "primary", "displayName": "Route Green Deep",   "canonical": "#0a5c33", "tonalRamp": ["#031a0e", "#053521", "#074f2c", "#0a5c33", "#0f8248", "#1aa862", "#44cf8c", "#85ebbb"] },
-      "blue":        { "role": "secondary", "displayName": "Motorway Blue",    "canonical": "#1b5c9e", "tonalRamp": ["#071a2e", "#0b2d4e", "#10406e", "#1b5c9e", "#2a7cc4", "#4d9cdc", "#7fbcec", "#b9dbf6"] },
-      "red":         { "role": "tertiary", "displayName": "Road Red",          "canonical": "#c9342b", "tonalRamp": ["#380b08", "#591512", "#7a201a", "#a52d25", "#c9342b", "#e2584f", "#ee8b84", "#f8c2be"] },
-      "amber":       { "role": "tertiary", "displayName": "Temporary Works Amber", "canonical": "#e8a400", "tonalRamp": ["#3a2700", "#5c3e00", "#7d5500", "#a16d00", "#c88a00", "#e8a400", "#f3c04a", "#fadd97"] },
-      "amber-deep":  { "role": "tertiary", "displayName": "Amber Deep",        "canonical": "#7a5600", "tonalRamp": ["#241800", "#3d2a00", "#563b00", "#6e4c00", "#7a5600", "#a16d00", "#c88a00", "#e8a400"] }
+      "canvas":       { "role": "neutral",  "displayName": "Daylight Canvas",   "canonical": "#f4f7f4", "tonalRamp": ["#dbe4dd", "#e5ebe6", "#eaf1ec", "#f0f5f1", "#f4f7f4", "#fafcfa"] },
+      "surface":      { "role": "neutral",  "displayName": "Reading Plate",     "canonical": "#ffffff", "tonalRamp": ["#eef0ec", "#f4f6f3", "#f9faf8", "#ffffff"] },
+      "ink":          { "role": "neutral",  "displayName": "Route Ink",         "canonical": "#17211d", "tonalRamp": ["#0c1310", "#17211d", "#22302a", "#34423a", "#43534a"] },
+      "muted":        { "role": "neutral",  "displayName": "Road Grey",         "canonical": "#55655c", "tonalRamp": ["#3f4c45", "#55655c", "#66756c", "#7c8a82", "#93a098"] },
+      "subtle":       { "role": "neutral",  "displayName": "Signpost Grey",     "canonical": "#5c6b63", "tonalRamp": ["#46534c", "#5c6b63", "#718078", "#8a9890", "#a3afa8"] },
+      "line":         { "role": "neutral",  "displayName": "Hairline",          "canonical": "#dfe7e1", "tonalRamp": ["#c3cec7", "#cad7ce", "#dfe7e1", "#e9eeea", "#f2f5f2"] },
+      "graph-grid":   { "role": "neutral",  "displayName": "Graph Grid",        "canonical": "#edf1ee", "tonalRamp": ["#d3ddd6", "#e1e7e3", "#edf1ee", "#f5f7f5"] },
+      "graph-cursor": { "role": "neutral",  "displayName": "Cursor Ink",        "canonical": "#123a28", "tonalRamp": ["#0b2418", "#123a28", "#1a513a", "#23684a"] },
+      "green":        { "role": "primary",  "displayName": "Route Green",       "canonical": "#1b6f4d", "tonalRamp": ["#0d3f2b", "#11553a", "#1b6f4d", "#2a8a63", "#57ad8a", "#9ed4ba", "#dff3e7"] },
+      "green-line":   { "role": "primary",  "displayName": "Route Green Line",  "canonical": "#a9cdb4", "tonalRamp": ["#7fb495", "#a9cdb4", "#c6e0cf", "#d3e7d9", "#d9f0e1", "#e7f3eb"] },
+      "blue":         { "role": "secondary","displayName": "Motorway Blue",     "canonical": "#2f67d7", "tonalRamp": ["#1d4291", "#2453b4", "#2f67d7", "#5a8ae4", "#9dbcf0", "#cddcf9", "#e7efff"] },
+      "orange":       { "role": "accent",   "displayName": "Estimate Amber",    "canonical": "#bd6a1d", "tonalRamp": ["#6e3c0d", "#8f4f11", "#bd6a1d", "#e0914b", "#f0bd8f", "#fff0dc"] },
+      "purple":       { "role": "accent",   "displayName": "Analysis Violet",   "canonical": "#6558bf", "tonalRamp": ["#3a3174", "#574aa9", "#6558bf", "#8c82d6", "#c0b9ec", "#eeecff"] },
+      "red":          { "role": "danger",   "displayName": "Danger Red",        "canonical": "#b44c4b", "tonalRamp": ["#7f3332", "#8f3736", "#a54140", "#b44c4b", "#d68d8b", "#e7c3c3", "#ffebeb"] }
     },
-    "typographyMeta": {
-      "display":      { "displayName": "Display",      "purpose": "Page titles (topbar), 26px Archivo 700." },
-      "headline":     { "displayName": "Headline",     "purpose": "Card titles, 15px Archivo 700." },
-      "body":         { "displayName": "Body",         "purpose": "Table cells, prose, buttons, 14px Archivo." },
-      "data":         { "displayName": "Data Numerals","purpose": "Instrument values and readouts, 24-30px Archivo 700 tabular." },
-      "label":        { "displayName": "Label",        "purpose": "Uppercase mono field labels, chips, table headers, 11px IBM Plex Mono 600." },
-      "measurement":  { "displayName": "Measurement",  "purpose": "Band notes, ranges, status line, 12px IBM Plex Mono." }
-    },
-    "shadows": [
-      { "name": "toast", "value": "0 4px 14px rgba(35,42,49,.2)", "purpose": "The only shadow in the system; the toast floating over the road." },
-      { "name": "primary-hover", "value": "0 3px 10px rgba(14,122,68,.22)", "purpose": "Tight lift on primary button hover." }
-    ],
-    "motion": [
-      { "name": "rise", "value": "rise .38s cubic-bezier(.2,.7,.3,1) both", "purpose": "Entrance of view sections; respects prefers-reduced-motion." },
-      { "name": "banddraw", "value": "banddraw .55s cubic-bezier(.2,.7,.3,1) both", "purpose": "The estimate band draws in from its left edge." },
-      { "name": "shimmer", "value": "shimmer 1.4s ease-in-out infinite", "purpose": "Skeleton loading plates." }
-    ],
-    "breakpoints": [
-      { "name": "lg", "value": "1100px" },
-      { "name": "md", "value": "760px" },
-      { "name": "sm", "value": "620px" }
-    ]
-  },
-  "components": [
-    {
-      "name": "Primary Button",
-      "kind": "button",
-      "refersTo": "button-primary",
-      "description": "The confident action: a permanent green sign.",
-      "html": "<button class=\"ds-btn-primary\">Save profile</button>",
-      "css": ".ds-btn-primary { background: var(--green,#0e7a44); color: var(--green-ink,#fff); border: 1px solid var(--green,#0e7a44); border-radius: 6px; padding: 9px 15px; font: 600 13px 'Archivo', system-ui, sans-serif; cursor: pointer; transition: background .18s ease, box-shadow .18s ease, transform .18s ease; } .ds-btn-primary:hover { background: var(--green-deep,#0a5c33); border-color: var(--green-deep,#0a5c33); transform: translateY(-1px); box-shadow: 0 3px 10px rgba(14,122,68,.22); } .ds-btn-primary:focus-visible { outline: 2px solid var(--green,#0e7a44); outline-offset: 2px; }"
-    },
-    {
-      "name": "Default Button",
-      "kind": "button",
-      "refersTo": "button-default",
-      "description": "Secondary action: a white plate that greets you with green on hover.",
-      "html": "<button class=\"ds-btn-default\">Import .fit</button>",
-      "css": ".ds-btn-default { background: var(--plate,#fff); color: var(--ink,#191d22); border: 1px solid var(--line,#d8dcd2); border-radius: 6px; padding: 9px 15px; font: 500 13px 'Archivo', system-ui, sans-serif; cursor: pointer; transition: border-color .18s ease, color .18s ease, background .18s ease; } .ds-btn-default:hover { border-color: var(--green,#0e7a44); color: var(--green-deep,#0a5c33); background: #fbfdf9; } .ds-btn-default:focus-visible { outline: 2px solid var(--green,#0e7a44); outline-offset: 2px; }"
-    },
-    {
-      "name": "Danger Button",
-      "kind": "button",
-      "refersTo": "button-danger",
-      "description": "Destructive action: ink that turns road red, never a filled red plate.",
-      "html": "<button class=\"ds-btn-danger\">Delete</button>",
-      "css": ".ds-btn-danger { background: var(--plate,#fff); color: var(--red,#c9342b); border: 1px solid var(--line,#d8dcd2); border-radius: 6px; padding: 9px 15px; font: 500 13px 'Archivo', system-ui, sans-serif; cursor: pointer; transition: border-color .18s ease, background .18s ease; } .ds-btn-danger:hover { border-color: var(--red,#c9342b); background: rgba(201,52,43,.05); } .ds-btn-danger:focus-visible { outline: 2px solid var(--red,#c9342b); outline-offset: 2px; }"
-    },
-    {
-      "name": "Text Input",
-      "kind": "input",
-      "refersTo": "input",
-      "description": "A blank sign face waiting for data; green ring when it has focus.",
-      "html": "<label class=\"ds-field\">Weight (kg)<input class=\"ds-input\" type=\"number\" value=\"71\"></label>",
-      "css": ".ds-field { display: flex; flex-direction: column; gap: 6px; font: 600 11px 'IBM Plex Mono', monospace; letter-spacing: 1px; text-transform: uppercase; color: var(--muted,#5b646e); } .ds-input { background: var(--plate,#fff); color: var(--ink,#191d22); border: 1px solid var(--line,#d8dcd2); border-radius: 6px; padding: 8px 10px; font: 400 13px 'Archivo', system-ui, sans-serif; width: 100%; } .ds-input:focus { outline: none; border-color: var(--green,#0e7a44); box-shadow: 0 0 0 3px rgba(14,122,68,.14); } .ds-input.invalid { border-color: var(--red,#c9342b); box-shadow: 0 0 0 3px rgba(201,52,43,.14); }"
-    },
-    {
-      "name": "Nav Link (steel)",
-      "kind": "nav",
-      "refersTo": "nav-link",
-      "description": "The gantry menu: steel rows that become a filled green sign when active.",
-      "html": "<nav class=\"ds-nav\"><a class=\"ds-nav-link\" href=\"#\">Dashboard</a><a class=\"ds-nav-link ds-nav-active\" href=\"#\">Rides</a><a class=\"ds-nav-link\" href=\"#\">Import</a></nav>",
-      "css": ".ds-nav { display: flex; flex-direction: column; gap: 3px; background: var(--structure,#232a31); padding: 8px; border-radius: 8px; } .ds-nav-link { color: #b7bfc8; text-decoration: none; padding: 9px 12px; border-radius: 6px; font: 500 13.5px 'Archivo', system-ui, sans-serif; } .ds-nav-link:hover { background: var(--structure-2,#2b343d); color: #fff; } .ds-nav-active { background: var(--green,#0e7a44); color: var(--green-ink,#fff); font-weight: 600; }"
-    },
-    {
-      "name": "Card Plate",
-      "kind": "card",
-      "refersTo": "card",
-      "description": "A flat white sign plate; depth comes from steel-versus-white, never shadow.",
-      "html": "<div class=\"ds-card\"><h2 class=\"ds-card-title\">Heart rate <span class=\"ds-sub\">bpm over time</span></h2></div>",
-      "css": ".ds-card { background: var(--plate,#fff); border: 1px solid var(--line,#d8dcd2); border-radius: 10px; padding: 18px 20px; } .ds-card-title { margin: 0 0 14px; font: 700 15px 'Archivo', system-ui, sans-serif; letter-spacing: .2px; color: var(--ink,#191d22); } .ds-sub { color: var(--muted,#5b646e); font: 400 12px 'Archivo', system-ui, sans-serif; margin-left: 8px; }"
-    },
-    {
-      "name": "Confidence Pills",
-      "kind": "chip",
-      "refersTo": "pill-high",
-      "description": "Sign-type chips: solid green = confident, amber = context, grey = low.",
-      "html": "<span class=\"ds-pill ds-pill-high\">LIDAR</span> <span class=\"ds-pill ds-pill-med\">ESTIMATED</span> <span class=\"ds-pill ds-pill-low\">×1</span>",
-      "css": ".ds-pill { display: inline-flex; align-items: center; gap: 6px; padding: 2px 9px; border-radius: 4px; font: 600 11px 'IBM Plex Mono', monospace; letter-spacing: .9px; text-transform: uppercase; white-space: nowrap; } .ds-pill::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: currentColor; } .ds-pill-high { color: var(--green-ink,#fff); background: var(--green,#0e7a44); } .ds-pill-med { color: var(--amber-ink,#2e2200); background: var(--amber,#e8a400); } .ds-pill-low { color: var(--muted,#5b646e); background: var(--plate-2,#f5f7f2); border: 1px solid var(--line,#d8dcd2); }"
-    },
-    {
-      "name": "Instrument Field with Estimate Band",
-      "kind": "custom",
-      "refersTo": "instrument",
-      "description": "The signature component: a direction-sign field whose estimate carries an honest hatched band.",
-      "html": "<div class=\"ds-instrument\"><div class=\"ds-field\"><div class=\"ds-label\">Avg power <span class=\"ds-est\">estimated</span></div><div class=\"ds-value\">157 <span class=\"ds-unit\">W</span></div><div class=\"ds-band ds-band-wide\"><div class=\"ds-track\"><i class=\"ds-range\"></i><b class=\"ds-marker\"></b></div><span class=\"ds-note\"><span>77 W – 240 W</span><b>wide</b></span></div></div></div>",
-      "css": ".ds-instrument { background: var(--plate,#fff); border: 1px solid var(--line,#d8dcd2); border-radius: 10px; padding: 22px 24px 20px; max-width: 340px; } .ds-field .ds-label { display: flex; align-items: center; gap: 7px; font: 600 11px 'IBM Plex Mono', monospace; letter-spacing: 1.2px; text-transform: uppercase; color: var(--muted,#5b646e); margin-bottom: 6px; } .ds-est { font: 600 11px 'IBM Plex Mono', monospace; color: var(--amber-ink,#2e2200); background: var(--amber,#e8a400); border-radius: 3px; padding: 2px 6px; } .ds-value { font: 700 30px 'Archivo', system-ui, sans-serif; letter-spacing: -.5px; font-variant-numeric: tabular-nums; color: var(--ink,#191d22); } .ds-unit { font-size: 14px; font-weight: 500; color: var(--muted,#5b646e); margin-left: 5px; } .ds-band { margin-top: 10px; max-width: 210px; } .ds-track { position: relative; height: 5px; background: var(--plate-3,#ecefe7); border-radius: 3px; } .ds-range { position: absolute; top: 0; bottom: 0; left: 32%; width: 45%; border-radius: 3px; background: repeating-linear-gradient(45deg, rgba(232,164,0,.55) 0 5px, rgba(232,164,0,.14) 5px 10px); } .ds-marker { position: absolute; top: -2px; bottom: -2px; left: 65%; width: 2px; background: var(--ink,#191d22); } .ds-note { display: flex; justify-content: space-between; gap: 8px; margin-top: 6px; font: 400 11px 'IBM Plex Mono', monospace; color: var(--muted,#5b646e); } .ds-note b { font-weight: 600; color: var(--amber-deep,#7a5600); }"
-    },
-    {
-      "name": "Dropzone",
-      "kind": "custom",
-      "refersTo": "dropzone",
-      "description": "A dashed road marking waiting for work; turns green on hover or drag.",
-      "html": "<div class=\"ds-dropzone\" tabindex=\"0\" role=\"button\"><div class=\"ds-big\">Drop .fit files here</div><div class=\"ds-hint\">or click to browse — select many at once</div></div>",
-      "css": ".ds-dropzone { border: 2px dashed var(--line,#d8dcd2); border-radius: 10px; padding: 44px 24px; text-align: center; color: var(--muted,#5b646e); cursor: pointer; transition: border-color .15s ease, background .15s ease; } .ds-dropzone:hover, .ds-dropzone.drag { border-color: var(--green,#0e7a44); background: rgba(14,122,68,.05); color: var(--ink,#191d22); } .ds-big { font: 700 17px 'Archivo', system-ui, sans-serif; color: var(--ink,#191d22); margin-bottom: 5px; } .ds-hint { font: 400 12px 'IBM Plex Mono', monospace; color: var(--muted,#5b646e); }"
+    "shadowMeta": {
+      "sm": { "canonical": "rgba(28,54,39,.05)" },
+      "md": { "canonical": "rgba(28,54,39,.08)" },
+      "lg": { "canonical": "rgba(28,54,39,.12)" }
     }
-  ],
-  "narrative": {
-    "northStar": "The Roadside Signboard",
-    "overview": "The analysis reads like the road it came from. Confident data are permanent signs — crisp ink on sign-white, mounted on dark gantry steel. Estimates are temporary works: amber plates, and when the range is wide, drawn with diagonal hatching like a provisional road marking. Repeated routes earn route numbers. The product's honesty promise is carried by the material itself: a sign that is amber or hatched announces its own uncertainty; nothing is faked into permanence. The world is deliberately light — the daylight reference system of British roads — a decisive break from the previous night-instrument panel. Depth comes from the contrast between dark sign structure and bright sign faces, never from floating shadows.",
-    "keyCharacteristics": [
-      "Confident = permanent green sign; estimated = temporary amber; wide = hatched.",
-      "Flat white sign plates on a pale verge ground; dark steel gantry frame.",
-      "One ink; hierarchy by type size and weight, not color.",
-      "Transport-family letterforms (Archivo) with bold tabular numerals.",
-      "Honest empty states and plain-language copy throughout."
-    ],
-    "rules": [
-      { "name": "The Permanent/Temporary Rule", "body": "A number is either a permanent sign (green, solid, crisp) or a temporary works (amber; hatched when wide). If a value is estimated, it must never wear the colors of certainty. Red is reserved for danger and is not part of the confidence scale.", "section": "colors" },
-      { "name": "The No-Fake-Tone Rule", "body": "Uncertainty is drawn as ordered diagonal hatching — never as a smooth gradient pretending precision. A hatched band is a sign still under construction.", "section": "colors" },
-      { "name": "The Type Floor Rule", "body": "No functional text below 11px; body copy never below 14px. Letterspacing and weight carry the instrument feel, not size.", "section": "typography" },
-      { "name": "The Size-Only Hierarchy Rule", "body": "Emphasis is weight and size in one ink. Colored or gradient headlines are not used.", "section": "typography" },
-      { "name": "The No-Floaty-Shadow Rule", "body": "Plates never carry blurred drop shadows. A 1px hairline and the steel-versus-white contrast is all the depth the world needs.", "section": "elevation" }
-    ],
-    "dos": [
-      "Do render confident data as green and solid, estimates as amber, and wide ranges as diagonal hatching.",
-      "Do keep plates flat with 1px hairlines and let steel-versus-white carry depth.",
-      "Do set functional text at or above 11px and body copy at 14px.",
-      "Do use Archivo for display/body/data numerals and IBM Plex Mono for labels and measurements.",
-      "Do carry hierarchy with size and weight in one ink."
-    ],
-    "donts": [
-      "Don't use blurred drop shadows on cards or the old headlight-amber glow.",
-      "Don't use smooth gradients to represent uncertainty — hatch it.",
-      "Don't use colored border-left bars for active states; fill the sign instead.",
-      "Don't put functional text below 11px.",
-      "Don't use Unicode glyphs or emoji as icons — draw SVGs in the sign's own weight.",
-      "Don't use dark map tiles; the world is daylight."
-    ]
   }
 }

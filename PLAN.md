@@ -173,7 +173,7 @@ Storage: local SQLite (fits the single-machine, zero-setup goal; no server).
 - **Tauri (Rust)** — native window, system tray, autostart, small launcher.
 - **Python engine** — FastAPI serving compute on localhost: FIT parser/patcher,
   lidar sampling, map-match, `numpy`/`scipy` power + uncertainty, CdA fitting.
-- **Browser UI** — talks to the engine over localhost; Plotly for charts.
+- **Browser UI** — talks to the engine over localhost; a lightweight SVG renderer for charts and linked replay cursors.
 
 The price of this split is two toolchains and a process boundary. It's worth
 it because the engine is a data-science stack we'd otherwise have to re-port

@@ -1,75 +1,67 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <meta name="theme-color" content="#131313" />
-  <meta name="description" content="VeloTrack Kinetic System — a local cycling performance lab for ride history, elevation, power estimates, and repeatable progress." />
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%23131313'/%3E%3Cpath d='M6 23 13 9h5l-3 6h7l-7 8h-5l3-6z' fill='%23caf300'/%3E%3C/svg%3E" />
-  <title>VeloTrack · Kinetic System</title>
-  <link rel="stylesheet" href="/static/vendor/fonts/fonts.css?v=4" />
-  <link rel="stylesheet" href="/static/vendor/leaflet/leaflet.css" />
-  <link rel="stylesheet" href="/static/style.css?v=14" />
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f7f9f7">
+  <meta name="description" content="VeloTrack — a private cycling performance studio for honest ride analysis.">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%231b6f4d'/%3E%3Cpath d='M7 22.5 13.2 8h4.5l-2.5 5.4h7.7l-7.1 9.1h-5.7l2.7-5.7H8.2z' fill='white'/%3E%3C/svg%3E">
+  <title>VeloTrack · Cycling studio</title>
+  <!-- impeccable-disable design-system-color -- this SPA shell carries no colors itself; every token lives in /static/style.css, which the static analyzer cannot resolve -->
+  <link rel="stylesheet" href="/static/vendor/fonts/fonts.css?v=6">
+  <link rel="stylesheet" href="/static/vendor/leaflet/leaflet.css">
+  <link rel="stylesheet" href="/static/style.css?v=42">
 </head>
 <body>
-  <a class="skip-link" href="#view">Skip to content</a>
+  <svg class="icon-sprite" aria-hidden="true">
+    <symbol id="i-arrow-up-right" viewBox="0 0 24 24"><path d="M7 17 17 7M8 7h9v9"/></symbol>
+    <symbol id="i-activity" viewBox="0 0 24 24"><path d="M3 12h4l2.1-6 4.2 12L15.5 12H21"/></symbol>
+    <symbol id="i-rides" viewBox="0 0 24 24"><path d="M5 5.5h14v13H5zM8.5 9h7M8.5 13h5"/></symbol>
+    <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5M5 14v5h14v-5"/></symbol>
+    <symbol id="i-award" viewBox="0 0 24 24"><circle cx="12" cy="8.5" r="4.5"/><path d="m9.5 12.2-1 7.3 3.5-2 3.5 2-1-7.3"/></symbol>
+    <symbol id="i-route" viewBox="0 0 24 24"><circle cx="6" cy="18" r="2.2"/><circle cx="18" cy="6" r="2.2"/><path d="M8 18c6 0 1.5-8 7.8-9.8"/></symbol>
+    <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16M8 4v4M15 10v4M11 16v4"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-chevron-right" viewBox="0 0 24 24"><path d="m9 5 7 7-7 7"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.8" cy="10.8" r="6.5"/><path d="m16 16 4.5 4.5"/></symbol>
+    <symbol id="i-play" viewBox="0 0 24 24"><path d="m9 6 10 6-10 6z" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-pause" viewBox="0 0 24 24"><path d="M8 6v12M16 6v12"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M5 7h14M10 11v6M14 11v6M8 7l1-3h6l1 3m-9 0 1 13h8l1-13"/></symbol>
+  </svg>
 
-  <aside class="sidebar">
-    <div class="brand">
-      <div class="brand-mark" aria-hidden="true">
-        <svg viewBox="0 0 28 28" fill="none">
-          <path d="M5 21.5 11.2 7h4.4l-2.4 5.3h7.8l-7.1 8.2H9.5l2.6-5H7.8z" fill="currentColor" />
-          <path d="M20.5 5.5h2v4h-2z" fill="currentColor" opacity=".55" />
-        </svg>
-      </div>
-      <div class="brand-text">
-        <div class="brand-name">VeloTrack</div>
-        <div class="brand-sub">kinetic system</div>
-      </div>
+  <a class="skip-link" href="#view">Skip to content</a>
+  <div class="app-shell">
+    <aside class="sidebar" aria-label="Application navigation">
+      <a class="brand" href="#/dashboard" aria-label="VeloTrack dashboard">
+        <span class="brand-mark"><svg viewBox="0 0 28 28" aria-hidden="true"><path d="M5 21.5 11.2 7h4.4l-2.4 5.3h7.8l-7.1 8.2H9.5l2.6-5H7.8z" fill="currentColor"/></svg></span>
+        <span><strong>VeloTrack</strong></span>
+      </a>
+
+      <nav class="primary-nav" aria-label="Primary">
+        <a href="#/dashboard" data-nav="dashboard"><svg class="nav-icon"><use href="#i-activity"/></svg><span>Overview</span></a>
+        <a href="#/rides" data-nav="rides"><svg class="nav-icon"><use href="#i-rides"/></svg><span>Rides</span></a>
+        <a href="#/routes" data-nav="routes"><svg class="nav-icon"><use href="#i-route"/></svg><span>Routes</span></a>
+        <a href="#/records" data-nav="records"><svg class="nav-icon"><use href="#i-award"/></svg><span>Records</span></a>
+        <a href="#/import" data-nav="import"><svg class="nav-icon"><use href="#i-upload"/></svg><span>Import rides</span></a>
+        <a href="#/profile" data-nav="profile"><svg class="nav-icon"><use href="#i-sliders"/></svg><span>Profile &amp; bike</span></a>
+      </nav>
+    </aside>
+
+    <div class="mobile-bar">
+      <a class="brand brand--mobile" href="#/dashboard"><span class="brand-mark"><svg viewBox="0 0 28 28" aria-hidden="true"><path d="M5 21.5 11.2 7h4.4l-2.4 5.3h7.8l-7.1 8.2H9.5l2.6-5H7.8z" fill="currentColor"/></svg></span><strong>VeloTrack</strong></a>
+      <a class="mobile-import" href="#/import"><svg class="nav-icon"><use href="#i-plus"/></svg><span>Import</span></a>
     </div>
 
-    <div class="nav-heading">Training ledger</div>
-    <nav aria-label="Primary navigation">
-      <a href="#/dashboard" data-nav="dashboard">
-        <span class="nav-glyph" aria-hidden="true">↗</span><span>Dashboard</span><span class="nav-trail">01</span>
-      </a>
-      <a href="#/rides" data-nav="rides">
-        <span class="nav-glyph" aria-hidden="true">▱</span><span>Rides</span><span class="nav-trail">02</span>
-      </a>
-      <a href="#/import" data-nav="import">
-        <span class="nav-glyph" aria-hidden="true">＋</span><span>Import</span><span class="nav-trail">03</span>
-      </a>
-      <a href="#/records" data-nav="records">
-        <span class="nav-glyph" aria-hidden="true">★</span><span>Records</span><span class="nav-trail">04</span>
-      </a>
-      <a href="#/routes" data-nav="routes">
-        <span class="nav-glyph" aria-hidden="true">⌁</span><span>Routes</span><span class="nav-trail">05</span>
-      </a>
-      <a href="#/profile" data-nav="profile">
-        <span class="nav-glyph" aria-hidden="true">◎</span><span>Profile</span><span class="nav-trail">06</span>
-      </a>
-    </nav>
-
-    <div class="sidebar-spacer"></div>
-    <div class="sidebar-foot" id="sidebar-foot">Connecting to local engine</div>
-    <div class="sidebar-build"><span class="build-line"></span>LOCAL / PRIVATE / 01</div>
-  </aside>
-
-  <main class="content">
-    <header class="topbar">
-      <div class="topbar-title">
-        <div class="eyebrow"><span class="eyebrow-mark"></span>velocity control / local engine</div>
-        <h1 id="page-title">Dashboard</h1>
-      </div>
-      <div class="topbar-right" id="topbar-right"></div>
-    </header>
-    <div id="view" class="view"></div>
-  </main>
+    <main class="main-content">
+      <header class="topbar">
+        <div class="topbar-actions" id="topbar-actions"><span class="engine-status"><i class="status-dot"></i><span>Local engine</span></span><a class="button button--primary button--small" href="#/import" aria-label="Import ride"><svg><use href="#i-plus"/></svg>Import ride</a></div>
+      </header>
+      <div id="view" class="view" tabindex="-1"></div>
+    </main>
+  </div>
 
   <div id="toast" class="toast" hidden role="status" aria-live="polite"></div>
-
-  <script src="/static/vendor/plotly.min.js"></script>
   <script src="/static/vendor/leaflet/leaflet.js"></script>
-  <script src="/static/app.js?v=16"></script>
+  <script src="/static/app.js?v=43"></script>
 </body>
 </html>

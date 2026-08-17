@@ -19,3 +19,7 @@ tauri/src-tauri/gen/
 
 # Stray downloads
 *.tif
+
+# Preview / agent transient state
+.freebuff/
+.claude/skills/impeccable/node_modules/

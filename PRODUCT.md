@@ -24,7 +24,7 @@ The mechanism a neighbouring product (e.g. Strava) could not truthfully copy: el
 - Post-ride analysis only — no live/on-bike capture.
 - Every imported `.fit` runs the full pipeline: parse → map-match → lidar elevation → weather → power + uncertainty → metrics → route grouping.
 - One rider profile (age, weight, height, bike type, HR zones) and one bike, optionally calibrated by steep-climb and loop-CdA procedures.
-- Charts are Plotly; the ride map is Leaflet with OSM/CARTO tiles; if tiles are unreachable the route line still draws.
+- Charts use a lightweight, purpose-built SVG renderer with shared axes, uncertainty bands, hover cards, keyboard seeking, and linked replay cursors; the ride map is Leaflet with OSM/CARTO tiles; if tiles are unreachable the route line still draws.
 
 ## Capabilities and Constraints
 
@@ -38,7 +38,7 @@ The name "Cycling Progress Tracker" is in use, but the owner has stated no visua
 
 ## Evidence on Hand
 
-Real implementation, no placeholder content: `README.md` and `PLAN.md` (full spec), `web/` (browser UI: `index.html`, `style.css`, `app.js`), `cycling/` (Python engine: parser, geo, lidar, map-match, elevation, weather, power, metrics, storage, pipeline, server), `tauri/` (optional native shell), `tests/`. No DESIGN.md or recorded visual system exists — there is nothing to inherit.
+Real implementation, no placeholder content: `README.md` and `PLAN.md` (full spec), `DESIGN.md` (Route Atlas visual system), `web/` (browser UI: `index.html`, `style.css`, `app.js`), `cycling/` (Python engine: parser, geo, lidar, map-match, elevation, weather, power, metrics, storage, pipeline, server), `tauri/` (optional native shell), and `tests/`. The browser UI uses a shared Route Atlas shell, a consolidated overview read path, a lightweight SVG graph system with linked replay cursors, Leaflet replay, and responsive page templates.
 
 ## Product Principles
 

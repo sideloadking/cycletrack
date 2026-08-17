@@ -111,7 +111,7 @@ cycling/           Python engine
   storage.py       SQLite (data model from PLAN §9)
   pipeline.py      per-file import orchestration
   server.py        FastAPI on localhost + static UI
-web/               browser UI (vanilla JS + vendored Plotly)
+web/               browser UI (vanilla JS + lightweight SVG graph renderer)
 tauri/             optional native shell (Rust, tray, autostart)
 main.py            entry point
 ```

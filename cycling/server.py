@@ -187,6 +187,25 @@ def routes_list():
     return storage.list_routes()
 
 
+@app.get("/api/overview")
+def overview():
+    """One read path for the dashboard's complete view model.
+
+    The browser can paint the overview from one local request instead of
+    coordinating seven independent reads. The underlying calculations and
+    storage remain unchanged; this is a presentation projection only.
+    """
+    return {
+        "rides": storage.list_rides(),
+        "routes": storage.list_routes(),
+        "records": storage.get_records(),
+        "fitness": trends_fitness(),
+        "power": trends_power(),
+        "drift": trends_cardiac(),
+        "wattsHr": trends_watts_hr(),
+    }
+
+
 @app.get("/api/routes/{route_id}")
 def route_detail(route_id: int):
     """A route and its rides, enriched for same-route comparison."""
@@ -284,7 +303,9 @@ def trends_cardiac():
 
 
 @app.get("/api/rides/{ride_id}/series")
-def ride_series(ride_id: int, downsample: int = 2000):
+def ride_series(ride_id: int, downsample: int = 1800):
+    """Return a bounded Ride timeline for smooth browser replay."""
+    downsample = max(240, min(int(downsample or 1800), 5000))
     return storage.get_ride_series(ride_id, downsample=downsample)
 
 
