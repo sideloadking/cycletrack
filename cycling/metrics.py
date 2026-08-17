@@ -99,21 +99,34 @@ def _power_metrics(records, rider):
     mode = [r.get("mode") for r in records]
     weight = float(rider.get("weight_kg", 75.0))
 
-    pedalling = w > 0
-    avg_watts = float(np.mean(w[pedalling])) if pedalling.any() else 0.0
-    avg_lo = float(np.mean(wl[pedalling])) if pedalling.any() else 0.0
-    avg_hi = float(np.mean(wh[pedalling])) if pedalling.any() else 0.0
+    # Power is only estimated off-downhill (compute_power zeroes every point
+    # below config.DOWNHILL_GRADE and tags it "coast"), and those zeroes
+    # must not pollute the aggregates. All power metrics here run over
+    # *pedalling* points only; time is re-based onto cumulative pedalling
+    # time so a coasting descent contributes no time to NP or the
+    # best-N-minute windows either.
+    pedalling = np.array([m == "pedal" for m in mode], dtype=bool)
+    if pedalling.any():
+        w_ped, wl_ped, wh_ped = w[pedalling], wl[pedalling], wh[pedalling]
+        t_eff = _effort_time(ts, pedalling)
+    else:
+        w_ped = wl_ped = wh_ped = np.array([], dtype=float)
+        t_eff = np.array([], dtype=float)
+
+    avg_watts = float(np.mean(w_ped)) if len(w_ped) else 0.0
+    avg_lo = float(np.mean(wl_ped)) if len(wl_ped) else 0.0
+    avg_hi = float(np.mean(wh_ped)) if len(wh_ped) else 0.0
 
     # Normalised power: 4th root of the mean of a 30 s rolling mean of w^4.
-    np_val = _normalised_power(w, ts)
-    np_lo = _normalised_power(wl, ts)
-    np_hi = _normalised_power(wh, ts)
+    np_val = _normalised_power(w_ped, t_eff)
+    np_lo = _normalised_power(wl_ped, t_eff)
+    np_hi = _normalised_power(wh_ped, t_eff)
 
     power_curve = {}
     for minutes in config.POWER_CURVE_MINUTES:
-        best = _best_power(w, ts, minutes * 60)
-        best_lo = _best_power(wl, ts, minutes * 60)
-        best_hi = _best_power(wh, ts, minutes * 60)
+        best = _best_power(w_ped, t_eff, minutes * 60)
+        best_lo = _best_power(wl_ped, t_eff, minutes * 60)
+        best_hi = _best_power(wh_ped, t_eff, minutes * 60)
         power_curve[str(minutes)] = {
             "watts": best, "lo": best_lo, "hi": best_hi,
         }
@@ -137,6 +150,20 @@ def _power_metrics(records, rider):
     }
 
 
+def _effort_time(ts, pedalling):
+    """Cumulative *pedalling* time at each pedalling point.
+
+    An interval between two consecutive records counts only when both ends
+    are pedalling, so a coasting descent between them adds zero time. Best-
+    N-minute windows and normalized power then measure sustained effort
+    rather than wall-clock time polluted by descents.
+    """
+    dt = np.maximum(np.diff(ts), 0.0)
+    interval = np.where(pedalling[:-1] & pedalling[1:], dt, 0.0)
+    t_eff = np.concatenate(([0.0], np.cumsum(interval)))
+    return t_eff[pedalling]
+
+
 def _normalised_power(w, ts):
     n = len(w)
     if n < 2:
@@ -155,20 +182,46 @@ def _normalised_power(w, ts):
 
 
 def _best_power(w, ts, seconds):
-    """Best sustained power over a rolling window of ``seconds`` seconds."""
+    """Best sustained power over a rolling *time* window of ``seconds``.
+
+    Index-based windows assume uniform 1 Hz sampling; real FIT data has
+    gaps (stops, dropped records), so the window is integrated over time
+    with the cumulative trapezoid integral instead."""
+    w = np.asarray(w, dtype=float)
+    ts = np.asarray(ts, dtype=float)
     n = len(w)
     if n == 0:
         return 0.0
     if seconds <= 0 or n == 1:
         return float(np.max(w))
-    # Rolling mean over the window; assume ~1 Hz but handle irregular ts.
-    window = max(2, int(round(seconds)))
-    if window >= n:
+    if ts[-1] <= ts[0]:
         return float(np.mean(w))
-    cs = np.concatenate(([0.0], np.cumsum(w)))
+    if ts[-1] - ts[0] <= seconds:
+        # Window longer than the ride: the best N-minute power is the
+        # time-weighted ride mean (matches the old index-based behaviour
+        # of averaging when the window covers everything).
+        cum = np.concatenate(([0.0], np.cumsum(np.diff(ts) * 0.5 * (w[:-1] + w[1:]))))
+        return float(cum[-1] / (ts[-1] - ts[0]))
+    cum = np.concatenate(([0.0], np.cumsum(np.diff(ts) * 0.5 * (w[:-1] + w[1:]))))
     best = 0.0
-    for i in range(n - window + 1):
-        best = max(best, (cs[i + window] - cs[i]) / window)
+    for i in range(n):
+        t_hi = ts[i]
+        t_lo = t_hi - seconds
+        c_hi = cum[i]
+        if t_lo <= ts[0]:
+            c_lo = 0.0
+            span = t_hi - ts[0]
+        else:
+            c_lo = float(np.interp(t_lo, ts, cum))
+            span = t_hi - t_lo
+        # Only full-length windows count: a partial window at the start of
+        # the ride would average a few high seconds over a short span and
+        # inflate the best-N-minute value.
+        if span < seconds:
+            continue
+        avg = (c_hi - c_lo) / span
+        if avg > best:
+            best = avg
     return float(best)
 
 
@@ -188,7 +241,10 @@ def _watts_at_fixed_hr(watts, hrs, confidence, mode):
     x = hrs[valid]
     y = watts[valid]
     A = np.column_stack([x, np.ones_like(x)])
-    (slope, intercept), *_ = np.linalg.lstsq(A, y, rcond=None)
+    # Robust fit: a few mis-estimated points (gust noise) must not drag the
+    # slope; IRLS downweights the worst residuals.
+    from . import power as power_mod
+    slope, intercept = power_mod._irls_solve(A, y)
     pred = A @ np.array([slope, intercept])
     ss_res = float(np.sum((y - pred) ** 2))
     ss_tot = float(np.sum((y - y.mean()) ** 2)) or 1e-9

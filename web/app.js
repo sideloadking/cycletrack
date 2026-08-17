@@ -35,12 +35,15 @@ const GRAPH = {
   greenDeep: GRAPH_CSS("--green-deep", "#11553a"),
   greenSoft: hexToRgba(GRAPH_CSS("--green", "#1b6f4d"), .14),
   greenWash: hexToRgba(GRAPH_CSS("--green", "#1b6f4d"), .07),
-  blue: GRAPH_CSS("--blue", "#2f67d7"),
-  blueSoft: hexToRgba(GRAPH_CSS("--blue", "#2f67d7"), .12),
-  orange: GRAPH_CSS("--orange", "#bd6a1d"),
-  orangeSoft: hexToRgba(GRAPH_CSS("--orange", "#bd6a1d"), .14),
-  orangeDeep: GRAPH_CSS("--orange-deep", "#8f4f11"),
-  purple: GRAPH_CSS("--purple", "#6558bf"),
+  blue: GRAPH_CSS("--blue", "#3b6ea5"),
+  blueSoft: hexToRgba(GRAPH_CSS("--blue", "#3b6ea5"), .12),
+  orange: GRAPH_CSS("--orange", "#a8691f"),
+  /* Bands are the honest envelope of every estimate, so their fill needs real
+     presence — a faint ghost reads as a rendering bug, not an uncertainty. */
+  orangeSoft: hexToRgba(GRAPH_CSS("--orange", "#a8691f"), .22),
+  orangeDeep: GRAPH_CSS("--orange-deep", "#825012"),
+  /* Red stays out of charts and the map — it belongs to destructive actions
+     and real errors only. Heart rate reads as a measured ink channel. */
   red: GRAPH_CSS("--red", "#b44c4b"),
   grid: GRAPH_CSS("--graph-grid", "#edf1ee"),
   gridStrong: GRAPH_CSS("--graph-grid-strong", "#d3ddd6"),
@@ -416,6 +419,13 @@ function graphBandPath(series, xValues, xToPx, yToPx, indices = null) {
       /* upper runs left→right; lower was pushed in the same order, so reverse
          it once at flush time instead of unshifting per point (O(n²)). */
       paths.push(`M${upper.map(([x, y]) => `${x.toFixed(2)} ${y.toFixed(2)}`).join(" L")} L${lower.reverse().map(([x, y]) => `${x.toFixed(2)} ${y.toFixed(2)}`).join(" L")} Z`);
+    } else if (upper.length === 1) {
+      /* A lone sample still carries its band: draw a narrow vertical range
+         bar so a single-ride trend never silently loses its uncertainty. */
+      const [x, hi] = upper[0];
+      const [, lo] = lower[0];
+      const half = 3;
+      paths.push(`M${(x - half).toFixed(2)} ${hi.toFixed(2)} L${(x + half).toFixed(2)} ${hi.toFixed(2)} L${(x + half).toFixed(2)} ${lo.toFixed(2)} L${(x - half).toFixed(2)} ${lo.toFixed(2)} Z`);
     }
     upper = []; lower = [];
   };
@@ -623,7 +633,7 @@ function renderGraph(target, spec) {
     const graphId = String(el.id || "chart").replace(/[^a-z0-9_-]/gi, "-");
     const patternId = `graph-band-${graphId}-${graph.uid}`;
     const clipId = `graph-clip-${graphId}-${graph.uid}`;
-    const defs = `<defs><pattern id="${patternId}" width="7" height="7" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="7" height="7" fill="${hexToRgba(GRAPH.orange, .09)}"></rect><line x1="0" y1="0" x2="0" y2="7" stroke="${GRAPH.orange}" stroke-opacity=".3" stroke-width="1.3"></line></pattern><clipPath id="${clipId}"><rect x="${margin.left}" y="${margin.top}" width="${plotWidth}" height="${plotHeight}"></rect></clipPath></defs>`;
+    const defs = `<defs><pattern id="${patternId}" width="8" height="8" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="8" height="8" fill="${hexToRgba(GRAPH.orange, .13)}"></rect><line x1="0" y1="0" x2="0" y2="8" stroke="${GRAPH.orange}" stroke-opacity=".55" stroke-width="1.8"></line></pattern><clipPath id="${clipId}"><rect x="${margin.left}" y="${margin.top}" width="${plotWidth}" height="${plotHeight}"></rect></clipPath></defs>`;
     const bands = spec.series.filter((item) => item.band).map((item, index) => {
       const path = graphBandPath(item, spec.x.values, xToPx, (value) => yToPx(value, item.axis || "left"), displayIndices.get(item));
       return path ? `<path class="graph-band" style="--i:${index}" d="${path}" fill="${item.band.pattern ? `url(#${patternId})` : item.band.color || GRAPH.orangeSoft}"></path>` : "";
@@ -896,7 +906,7 @@ function drawCardiac(data) {
     ariaLabel: "Cardiac drift by ride",
     x: { values: points.map((point) => point.date), type: "time", label: "ride date" },
     y: { label: "bpm / hour", format: "decimal", includeZero: true },
-    series: [{ name: "Cardiac drift", values: points.map((point) => point.drift_bpm_per_hr), type: "bar", pointColors: points.map((point) => point.drift_bpm_per_hr >= 0 ? GRAPH.orange : GRAPH.blue), opacity: .82, format: (value) => `${Number(value).toFixed(1)} bpm/hr` }],
+    series: [{ name: "Cardiac drift", values: points.map((point) => point.drift_bpm_per_hr), type: "bar", pointColors: points.map((point) => point.drift_bpm_per_hr >= 0 ? GRAPH.orange : GRAPH.green), opacity: .82, format: (value) => `${Number(value).toFixed(1)} bpm/hr` }],
   });
 }
 function drawPowerTrend(data, duration) {
@@ -1072,6 +1082,28 @@ function alignNearest(samples, gps) {
   gps.forEach((point, index) => { while (pointer < samples.length - 1 && Math.abs(samples[pointer + 1].t - point.t) <= Math.abs(samples[pointer].t - point.t)) pointer += 1; if (Math.abs(samples[pointer].t - point.t) < 8) result[index] = samples[pointer]; });
   return result;
 }
+/* Centred time-windowed mean for display. The per-second power estimate swings
+   hard sample-to-sample (measurement noise, not effort), which reads as a
+   jagged sawtooth; a ~16 s window makes the effort visible while keeping the
+   mean unchanged and the shape intact. Nulls and long pauses never smear. */
+function smoothSeries(values, times = null, windowSeconds = 16) {
+  const out = new Array(values.length).fill(null);
+  const radius = times ? 12 : 8;
+  for (let i = 0; i < values.length; i += 1) {
+    const value = values[i];
+    const t = times?.[i];
+    if (!finiteGraphValue(value) || (times && !finiteGraphValue(t))) continue;
+    let sum = 0, count = 0;
+    for (let j = Math.max(0, i - radius); j <= Math.min(values.length - 1, i + radius); j += 1) {
+      const sample = values[j];
+      if (!finiteGraphValue(sample)) continue;
+      if (times && Math.abs(times[j] - t) > windowSeconds) continue;
+      sum += sample; count += 1;
+    }
+    out[i] = count ? sum / count : value;
+  }
+  return out;
+}
 function drawTelemetryCharts(series, metrics) {
   const gps = series.gps || [], hr = series.hr || [], power = series.power || [];
   const refs = {};
@@ -1108,18 +1140,26 @@ function drawTelemetryCharts(series, metrics) {
       ariaLabel: "Heart rate across the ride",
       x: { values: hr.map((point) => (point.t - t0) / 60), type: "linear", label: "minutes" },
       y: { label: "bpm", format: "bpm" },
-      series: [{ name: "Heart rate", values: hr.map((point) => point.hr), color: GRAPH.red, width: 1.9, pointRadius: 1.8, points: false, format: "bpm" }],
+      series: [{ name: "Heart rate", values: hr.map((point) => point.hr), color: GRAPH.ink, width: 1.9, pointRadius: 1.8, points: false, format: "bpm" }],
     });
     refs.hr.xOf = (index) => gps[index] ? (gps[index].t - t0) / 60 : 0;
   } else graphEmpty($("#ch-hr"), "No heart-rate signal", "This Ride was recorded without HR data.");
   if (power.length) {
+    /* Display-smooth the estimate and its band together, so the envelope stays
+       consistent with the line (raw per-second values remain in the readout's
+       band text via the same arrays below). */
+    const powerTimes = powerAligned.map((point) => point?.t ?? null);
+    const wattsEst = smoothSeries(powerAligned.map((point) => point?.watts_est ?? null), powerTimes);
+    const wattsLo = smoothSeries(powerAligned.map((point) => point?.watts_lo ?? null), powerTimes);
+    const wattsHi = smoothSeries(powerAligned.map((point) => point?.watts_hi ?? null), powerTimes);
+    refs.powerSmoothed = { wattsEst, wattsLo, wattsHi };
     refs.power = renderGraph("#ch-power", {
       ariaLabel: "Estimated power and uncertainty across the ride",
       x: { values: distance, type: "linear", label: xLabel },
       y: { label: "watts", format: "watts", includeZero: true, robust: true },
       series: [{
-        name: "Estimated power", values: powerAligned.map((point) => point?.watts_est ?? null), color: GRAPH.orange, width: 2.1, pointRadius: 1.8, points: false, format: "watts",
-        band: { lo: powerAligned.map((point) => point?.watts_lo ?? null), hi: powerAligned.map((point) => point?.watts_hi ?? null), pattern: true },
+        name: "Estimated power", values: wattsEst, color: GRAPH.orange, width: 2.1, pointRadius: 1.8, points: false, format: "watts",
+        band: { lo: wattsLo, hi: wattsHi, pattern: true },
       }],
     });
     refs.power.xOf = (index) => distance[index];
@@ -1129,7 +1169,7 @@ function drawTelemetryCharts(series, metrics) {
     ariaLabel: "Distribution of grade across the ride",
     x: { values: distribution.map((_, index) => index), type: "category", labels: distribution.map((bucket) => `${bucket.from}%`), label: "grade" },
     y: { label: "samples", format: "integer", includeZero: true },
-    series: [{ name: "Samples", values: distribution.map((bucket) => bucket.count), type: "bar", pointColors: distribution.map((bucket) => bucket.from >= 3 ? GRAPH.orange : bucket.to <= 0 ? GRAPH.blue : GRAPH.green), opacity: .8, format: "integer" }],
+    series: [{ name: "Samples", values: distribution.map((bucket) => bucket.count), type: "bar", pointColors: distribution.map((bucket) => bucket.from >= 3 ? GRAPH.orange : GRAPH.green), opacity: .8, format: "integer" }],
   });
   else graphEmpty($("#ch-grade"), "No grade distribution", "There is not enough elevation data to draw this view.");
   return refs;
@@ -1147,9 +1187,11 @@ function setupReplay(series, chartRefs) {
   if (latlngs.length > 1 && window.L) {
     state.map = window.L.map($("#ride-map"), { scrollWheelZoom: false, zoomControl: true });
     window.L.tileLayer("https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png", { attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a> &copy; <a href="https://carto.com/">CARTO</a>', maxZoom: 19, subdomains: "abcd" }).addTo(state.map);
-    window.L.polyline(latlngs, { color: GRAPH.green, weight: 4, opacity: .92, lineCap: "round", lineJoin: "round" }).addTo(state.map);
+    /* White casing under the route keeps the green readable on light tiles. */
+    window.L.polyline(latlngs, { color: "#fff", weight: 9, opacity: .85, lineCap: "round", lineJoin: "round" }).addTo(state.map);
+    window.L.polyline(latlngs, { color: GRAPH.green, weight: 4, opacity: .95, lineCap: "round", lineJoin: "round" }).addTo(state.map);
     window.L.circleMarker(latlngs[0], { radius: 5, color: "#fff", weight: 2, fillColor: GRAPH.green, fillOpacity: 1 }).addTo(state.map).bindTooltip("Start");
-    window.L.circleMarker(latlngs[latlngs.length - 1], { radius: 5, color: "#fff", weight: 2, fillColor: GRAPH.red, fillOpacity: 1 }).addTo(state.map).bindTooltip("Finish");
+    window.L.circleMarker(latlngs[latlngs.length - 1], { radius: 5, color: "#fff", weight: 2, fillColor: GRAPH.cursor, fillOpacity: 1 }).addTo(state.map).bindTooltip("Finish");
     playhead = window.L.circleMarker(latlngs[0], { radius: 7, color: "#fff", weight: 3, fillColor: GRAPH.green, fillOpacity: 1 }).addTo(state.map);
     state.map.fitBounds(window.L.latLngBounds(latlngs), { padding: [28, 28] });
     state.map.on("click", (event) => { let closest = 0, best = Infinity; gps.forEach((point, index) => { if (point.lat == null) return; const distance = (point.lat - event.latlng.lat) ** 2 + (point.lon - event.latlng.lng) ** 2; if (distance < best) { best = distance; closest = index; } }); seek(closest); });
@@ -1163,16 +1205,24 @@ function setupReplay(series, chartRefs) {
     const point = gps[current] || {};
     const hrPoint = hrAligned[current];
     const powerPoint = powerAligned[current];
+    /* Show the same display-smoothed power the chart draws, so the readout
+       matches the line; fall back to the raw point if smoothing is absent. */
+    const smoothed = chartRefs.powerSmoothed;
+    const wattsEst = smoothed?.wattsEst?.[current] ?? powerPoint?.watts_est;
+    const wattsLo = smoothed?.wattsLo?.[current] ?? powerPoint?.watts_lo;
+    const wattsHi = smoothed?.wattsHi?.[current] ?? powerPoint?.watts_hi;
     timeLabel.textContent = fmtDuration(point.t - t0);
+    /* The note line is always rendered (hidden when empty) so the bar never
+       changes height as the band text appears and disappears mid-scrub. */
     readout.innerHTML = [
       ["Time", fmtDuration(point.t - t0), ""],
       ["Distance", fmtDistance(point.dist != null ? point.dist : distances[current] * 1000), ""],
       ["Speed", fmtSpeed(point.speed), ""],
       ["Heart rate", hrPoint?.hr != null ? `${Math.round(hrPoint.hr)} bpm` : "—", ""],
-      ["Power", powerPoint?.watts_est != null ? `${Math.round(powerPoint.watts_est)} W` : "—", powerPoint?.watts_hi > 0 ? `${Math.round(powerPoint.watts_lo)}–${Math.round(powerPoint.watts_hi)} W` : ""],
+      ["Power", wattsEst != null ? `${Math.round(wattsEst)} W` : "—", wattsHi > 0 ? `${Math.round(wattsLo)}–${Math.round(wattsHi)} W` : ""],
       ["Elevation", fmtMeters(point.elev), ""],
       ["Grade", point.grade != null ? `${(point.grade * 100).toFixed(1)}%` : "—", ""],
-    ].map(([label, value, note]) => `<div class="readout__field"><div class="readout__label">${esc(label)}</div><div class="readout__value">${esc(value)}</div>${note ? `<div class="readout__note">${esc(note)}</div>` : ""}</div>`).join("");
+    ].map(([label, value, note]) => `<div class="readout__field"><div class="readout__label">${esc(label)}</div><div class="readout__value">${esc(value)}</div><div class="readout__note"${note ? "" : " style=\"visibility:hidden\""}>${esc(note || "\u00a0")}</div></div>`).join("");
     if (playhead && latlngs.length) playhead.setLatLng(latlngs[Math.min(current, latlngs.length - 1)]);
     const cursor = {};
     Object.entries(chartRefs).forEach(([key, ref]) => { if (ref?.el && ref.xOf) cursor[key] = { el: ref, x: ref.xOf(current) }; });

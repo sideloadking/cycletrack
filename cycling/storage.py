@@ -404,6 +404,22 @@ def _summarize(row):
 # Calibration
 # ---------------------------------------------------------------------------
 
+def get_ride_calibration(ride_id):
+    """Most recent calibration params for a ride (dict) or None."""
+    with _lock:
+        conn = _connect()
+        row = conn.execute(
+            "SELECT params FROM calibration WHERE ride_id = ? "
+            "ORDER BY created_at DESC, id DESC LIMIT 1", (ride_id,)
+        ).fetchone()
+    if row is None or not row["params"]:
+        return None
+    try:
+        return json.loads(row["params"])
+    except Exception:
+        return None
+
+
 def save_calibration(ride_id, calib):
     with _lock:
         conn = _connect()
@@ -417,6 +433,12 @@ def save_calibration(ride_id, calib):
             conn.execute(
                 "UPDATE bike SET crr = ?, cdA = ?, calibrated = 1, calibration = ? WHERE id = 1",
                 (calib["crr"], calib["cdA"], json.dumps(calib)),
+            )
+            # The ride whose data produced the calibration is now riding a
+            # calibrated bike: tag it so the watts@HR trend can mark its
+            # points confident instead of context.
+            conn.execute(
+                "UPDATE ride SET bike_calibrated = 1 WHERE id = ?", (ride_id,)
             )
         conn.commit()
 

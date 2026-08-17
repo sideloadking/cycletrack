@@ -90,9 +90,12 @@ information limit, not an implementation detail.
 
 So every point gets a **power band, not a point estimate**:
 - Tight on steep climbs (gravity dominates, drag is small).
-- Wide on flats and descents (drag dominates, wind unknown).
-- ~0 W while coasting downhill (correct behavior, flagged as "no pedalling
-  required" rather than "zero effort").
+- Wide on flats (drag dominates, wind unknown).
+- Downhill sections removed from the estimate entirely: on a descent speed +
+  grade cannot separate pedalling, coasting and braking, so every point below
+  `config.DOWNHILL_GRADE` is reported as ~0 W and flagged "coast", and is
+  excluded from every power aggregate (average, NP, best-N-minute, VO2max,
+  watts@fixed-HR).
 
 Every derived metric inherits the band. Charts show the envelope, and anything
 computed from power carries a confidence tag.

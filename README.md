@@ -58,8 +58,12 @@ the estimate is genuinely uncertain. Every point therefore carries a band
 (`watts_lo`/`watts_est`/`watts_hi`) and a confidence tag:
 
 - **tight** on steep climbs (gravity dominates),
-- **wide** on flats/descents (drag dominates, wind unknown),
-- **~0 W while coasting downhill**, flagged "coast" rather than "zero effort".
+- **wide** on flats (drag dominates, wind unknown),
+- **no power on descents** — every downhill point is excluded from the
+  estimate (reported as ~0 W, flagged "coast"): on a descent speed + grade
+  cannot separate pedalling, coasting and braking, so the model refuses to
+  guess. Downhill points are also kept out of every power aggregate
+  (average, normalized power, best-N-minute, VO2max, watts@HR).
 
 Two calibration procedures tighten the bands over time: a **steep-climb** test
 (pins rolling resistance) and a **loop CdA fit** (closes the energy budget on

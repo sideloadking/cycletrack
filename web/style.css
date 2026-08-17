@@ -23,15 +23,14 @@
   --green-line: #a9cdb4;
   --green-line-soft: #d3e7d9;
   --green-hover: #d9f0e1;
-  --blue: #2f67d7;
-  --blue-deep: #2453b4;
-  --blue-soft: #e7efff;
-  --orange: #bd6a1d;
-  --orange-deep: #8f4f11;
-  --orange-soft: #fff0dc;
-  --purple: #6558bf;
-  --purple-deep: #574aa9;
-  --purple-soft: #eeecff;
+  /* Three accents only: green = confident, blue = context, orange = estimate.
+     Red is reserved for destructive actions and real errors. */
+  --blue: #3b6ea5;
+  --blue-deep: #2d5279;
+  --blue-soft: #e9eef4;
+  --orange: #a8691f;
+  --orange-deep: #825012;
+  --orange-soft: #f7ede0;
   --red: #b44c4b;
   --red-deep: #7f3332;
   --red-line: #e7c3c3;
@@ -341,7 +340,7 @@ svg { display: block; }
 .uncertainty { margin-top: 11px; }
 .uncertainty__track { position: relative; height: 5px; overflow: hidden; background: var(--surface-soft); border-radius: 999px; }
 .uncertainty__range { position: absolute; top: 0; bottom: 0; background: var(--orange); border-radius: 999px; }
-.uncertainty--wide .uncertainty__range { background: repeating-linear-gradient(135deg, var(--orange) 0 5px, rgba(189,106,29,.35) 5px 10px); }
+.uncertainty--wide .uncertainty__range { background: repeating-linear-gradient(135deg, var(--orange) 0 5px, rgba(168,105,31,.35) 5px 10px); }
 .uncertainty__marker { position: absolute; top: -3px; bottom: -3px; width: 2px; background: var(--ink); border-radius: 2px; }
 .uncertainty__note { display: flex; justify-content: space-between; gap: 8px; margin-top: 5px; color: var(--subtle); font: 500 11px/15px var(--font-data); }
 .uncertainty__note strong { color: var(--orange-deep); font-weight: 600; text-transform: uppercase; }
@@ -349,7 +348,7 @@ svg { display: block; }
 .telemetry-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
 .telemetry-head h2 { margin: 0; font: 700 20px/1.2 var(--font-body); }
 .telemetry-tools { display: flex; align-items: center; gap: 8px; }
-.map-wrap { position: relative; height: 405px; overflow: hidden; background: #e5eee8; border: 1px solid var(--line); border-radius: var(--radius); }
+.map-wrap { position: relative; height: 405px; overflow: hidden; background: var(--canvas); border: 1px solid var(--line); border-radius: var(--radius); }
 .ride-map { width: 100%; height: 100%; }
 
 .scrubber { padding: 19px 2px 0; }
@@ -433,7 +432,12 @@ svg { display: block; }
   .graph-enter, .graph-enter .graph-line, .graph-enter .graph-bar { animation: none !important; }
 }
 .graph-area { opacity: .34; }
-.graph-band { opacity: .62; }
+.graph-band {
+  opacity: .85;
+  stroke: rgba(168, 105, 31, .4);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
 .graph-bar { vector-effect: non-scaling-stroke; }
 .graph-point { stroke: var(--surface); stroke-width: 1.6px; vector-effect: non-scaling-stroke; }
 .graph-hover-line { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 3 5; opacity: .5; vector-effect: non-scaling-stroke; pointer-events: none; }
@@ -441,7 +445,7 @@ svg { display: block; }
 .graph-cursor-line { stroke: var(--graph-cursor); stroke-width: 1.5; opacity: .95; vector-effect: non-scaling-stroke; pointer-events: none; }
 .graph-cursor-dot { stroke: var(--surface); stroke-width: 2.6; vector-effect: non-scaling-stroke; pointer-events: none; }
 .graph-hit-area { fill: transparent; cursor: crosshair; outline: none; }
-.graph-hit-area:focus { fill: rgba(47,103,215,.05); stroke: rgba(47,103,215,.35); stroke-width: 1.2; vector-effect: non-scaling-stroke; }
+.graph-hit-area:focus { fill: rgba(59,110,165,.05); stroke: rgba(59,110,165,.35); stroke-width: 1.2; vector-effect: non-scaling-stroke; }
 .graph-legend { position: absolute; top: 5px; right: 4px; z-index: 2; display: flex; align-items: center; flex-wrap: wrap; justify-content: flex-end; gap: 5px 15px; max-width: 80%; pointer-events: none; }
 .graph-legend-item { display: inline-flex; align-items: center; gap: 7px; color: var(--muted); font: 500 12px/17px var(--font-body); white-space: nowrap; }
 .graph-legend-item i { width: 9px; height: 9px; flex: none; background: var(--c, var(--green)); border-radius: 3px; }
@@ -459,8 +463,9 @@ svg { display: block; }
   .graph-legend { gap: 4px 10px; }
   .graph-legend-item { font-size: 11px; }
 }
-.leaflet-container { color: var(--ink); background: #e6eee9; font-family: var(--font-body); }
-.leaflet-tile { filter: saturate(.78) brightness(1.08) contrast(.95); }
+.leaflet-container { color: var(--ink); background: var(--canvas); font-family: var(--font-body); }
+/* CARTO light tiles are already soft; keep them defined instead of washed out. */
+.leaflet-tile { filter: saturate(.86) brightness(1.02) contrast(1.05); }
 .leaflet-control-attribution { color: var(--muted) !important; background: rgba(255,255,255,.86) !important; font: 500 11px/15px var(--font-data) !important; }
 .leaflet-control-attribution a { color: var(--green) !important; }
 .leaflet-bar { border: 1px solid var(--line-strong) !important; }
@@ -469,7 +474,7 @@ svg { display: block; }
 .leaflet-tooltip { color: var(--ink-soft); background: var(--white); border: 1px solid var(--line); border-radius: 6px; font: 600 11px/16px var(--font-data); }
 
 /* ------------------------------ focus & accessibility */
-a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible, [tabindex]:focus-visible { outline: 3px solid rgba(47,103,215,.36); outline-offset: 2px; }
+a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible, [tabindex]:focus-visible { outline: 3px solid rgba(59,110,165,.4); outline-offset: 2px; }
 .skip-link { position: fixed; top: 12px; left: 12px; z-index: 1000; padding: 9px 13px; color: var(--white); background: var(--green-deep); border-radius: 7px; text-decoration: none; transform: translateY(-160%); transition: transform .15s ease; }
 .skip-link:focus-visible { transform: translateY(0); }
 

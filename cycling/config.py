@@ -51,6 +51,12 @@ ELEVATION_GAIN_THRESHOLD = 1.0
 MIN_TRACK_M = 200.0
 # Grade sanity clamp (a road steeper than this is almost always a data error).
 MAX_GRADE = 0.35  # 35%
+# Any point on a grade below this is "downhill" and is excluded from power
+# entirely: on a descent speed + grade cannot separate pedalling, coasting
+# and braking (gravity offsets aero drag and wind is unknown), so the model
+# reports ~0 W rather than a fake number. Descending points are also kept
+# out of every power aggregate (average/NP/best-N-minute/VO2max).
+DOWNHILL_GRADE = -0.01  # -1%
 
 # UK bounds — EA National LIDAR coverage is England only (roughly).
 LIDAR_LAT_MIN, LIDAR_LAT_MAX = 49.85, 55.88
@@ -106,8 +112,9 @@ UNCERTAINTY = {
     "cdA_rel_sigma_cal": 0.06,   # fraction of CdA (loop-calibrated)
     "crr_rel_sigma": 0.25,       # fraction of Crr (uncalibrated)
     "crr_rel_sigma_cal": 0.08,   # fraction of Crr (climb-calibrated)
-    "grade_sigma": 0.005,        # 0.5% grade uncertainty after smoothing
+    "grade_sigma": 0.005,        # 0.5% grade uncertainty (lidar is finer, 25 m DEM needs this)
     "mass_sigma_kg": 1.5,        # rider + kit + bike mass uncertainty
+    "rho_rel_sigma": 0.015,      # air-density rel. error (weather + elevation)
 }
 
 AIR_DENSITY_DEFAULT = 1.225  # kg/m^3 (15 C, 1013 hPa)

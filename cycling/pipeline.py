@@ -86,6 +86,21 @@ def import_fit_file(path, rider, bike, progress_cb=None, allow_duplicate=False,
 
     # Optional calibration from suitable segments.
     calib = try_auto_calibrate(ride_id, records, rider, bike, weather)
+
+    # If the loop calibration recovered an effective wind (the wind that
+    # actually balanced the coasting descents), re-run the power stage with
+    # it: the estimate then uses the measured wind instead of the weather
+    # forecast, which is exactly where flat-ride error lives.
+    loop_fit = next((c for c in calib if c.get("type") == "loop"), None)
+    if loop_fit and loop_fit.get("wind_recovered") and loop_fit.get("wind_mps") is not None:
+        eff_weather = dict(weather)
+        eff_weather["wind_speed_mps"] = loop_fit["wind_mps"]
+        eff_weather["wind_dir_deg"] = loop_fit["wind_dir_deg"]
+        records = power_mod.compute_power(records, rider, bike, eff_weather)
+        ride_metrics = metrics_mod.compute_ride_metrics(
+            records, rider, bike, elev_summary, meta)
+        storage.update_ride_metrics(ride_id, ride_metrics, records)
+
     prog(100, "Done")
     return {
         "ride_id": ride_id,
@@ -118,6 +133,14 @@ def recalculate_rides(rider, bike):
         if not records:
             continue
         weather = ride.get("weather") or {}
+        # If this ride's calibration recovered an effective wind, keep using
+        # it (same as the import path) so a profile change cannot silently
+        # revert the ride to the weather forecast wind.
+        calib = storage.get_ride_calibration(ride_id)
+        if calib and calib.get("wind_recovered") and calib.get("wind_mps") is not None:
+            weather = dict(weather)
+            weather["wind_speed_mps"] = calib["wind_mps"]
+            weather["wind_dir_deg"] = calib["wind_dir_deg"]
         records = power_mod.compute_power(records, rider, bike, weather)
         m = ride.get("metrics") or {}
         elev_summary = {

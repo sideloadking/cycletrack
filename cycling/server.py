@@ -407,6 +407,28 @@ def calibrate_ride(ride_id: int, payload: dict = Body(...)):
     if result is None:
         return JSONResponse({"error": "No suitable segments found"}, status_code=422)
     storage.save_calibration(ride_id, result)
+    # Mirror the import path: if the fit recovered an effective wind, re-run
+    # this ride's power with it so manual calibration behaves like auto
+    # calibration.
+    if result.get("wind_recovered") and result.get("wind_mps") is not None:
+        eff_weather = dict(weather)
+        eff_weather["wind_speed_mps"] = result["wind_mps"]
+        eff_weather["wind_dir_deg"] = result["wind_dir_deg"]
+        records = power_mod.compute_power(records, rider, bike, eff_weather)
+        m = ride.get("metrics") or {}
+        elev_summary = {
+            "gain_m": m.get("elevation_gain_m") or ride.get("gain_m") or 0.0,
+            "min_elev": m.get("min_elev"),
+            "max_elev": m.get("max_elev"),
+            "elevation_source": ride.get("elevation_source") or m.get("elevation_source"),
+            "snapped_ratio": m.get("snapped_ratio", 0.0),
+        }
+        meta = {
+            "total_distance": ride.get("distance_m"),
+            "duration_seconds": ride.get("duration_s"),
+        }
+        metrics = metrics_mod.compute_ride_metrics(records, rider, bike, elev_summary, meta)
+        storage.update_ride_metrics(ride_id, metrics, records)
     return result
 
 

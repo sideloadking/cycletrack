@@ -29,17 +29,13 @@ colors:
   green-line-soft: "#d3e7d9"
   green-hover: "#d9f0e1"
   # blue — cool contextual series
-  blue: "#2f67d7"
-  blue-deep: "#2453b4"
-  blue-soft: "#e7efff"
+  blue: "#3b6ea5"
+  blue-deep: "#2d5279"
+  blue-soft: "#e9eef4"
   # orange — estimate / interpret with care
-  orange: "#bd6a1d"
-  orange-deep: "#8f4f11"
-  orange-soft: "#fff0dc"
-  # purple — secondary analytical emphasis
-  purple: "#6558bf"
-  purple-deep: "#574aa9"
-  purple-soft: "#eeecff"
+  orange: "#a8691f"
+  orange-deep: "#825012"
+  orange-soft: "#f7ede0"
   # red — destructive actions and real errors
   red: "#b44c4b"
   red-deep: "#7f3332"
@@ -134,10 +130,9 @@ Clear hierarchy, generous touch targets, responsive surfaces, and material roles
 - **Surface** (`#ffffff`) is a readable plate for a decision or a group of facts.
 - **Surface soft** (`#f0f5f1`) is used for controls, secondary panels, and local/private notes.
 - **Green** (`#1b6f4d`) means a confident, positive, or navigational state. Green is never used to hide uncertainty.
-- **Blue** (`#2f67d7`) is a cool contextual series: fitness, speed, or normalized power.
-- **Orange** (`#bd6a1d`) means an estimate or a warning about interpretation. Wide estimates use ordered diagonal hatching.
-- **Purple** (`#6558bf`) is reserved for secondary analytical emphasis, not status.
-- **Red** (`#b44c4b`) is reserved for destructive actions and actual errors.
+- **Blue** (`#3b6ea5`) is a cool contextual series: fitness, speed, or normalized power.
+- **Orange** (`#a8691f`) means an estimate or a warning about interpretation. Wide estimates use ordered diagonal hatching.
+- **Red** (`#b44c4b`) is reserved for destructive actions and actual errors — it never appears in charts or on the map.
 
 ### Honest data rule
 
