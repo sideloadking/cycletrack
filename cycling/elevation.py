@@ -45,10 +45,11 @@ def _elevation_gain(distance, elevation, threshold=1.0, bin_m=None):
     """Total ascent: sum of positive deltas of the profile resampled to a
     fixed distance grid.
 
-    Differencing the raw ~4 m lidar points against a fixed 1 m threshold is
-    spacing-dependent (a 1 m step at 4 m spacing means a 25% grade), so a
-    real 1-2% climb contributes nothing. Resampling to ~25 m bins makes the
-    threshold mean "rise per 25 m", independent of the source resolution.
+    Differencing raw ~4 m lidar points against a fixed absolute threshold is
+    spacing-dependent (a 1 m step at 4 m spacing reads as a 25% grade).
+    Resampling to ~25 m bins makes the threshold mean "rise per 25 m",
+    independent of the source resolution, and a sub-1% threshold lets real
+    1-2% climbs count while still rejecting smoothing noise.
     """
     distance = np.asarray(distance, dtype=float)
     elevation = np.asarray(elevation, dtype=float)

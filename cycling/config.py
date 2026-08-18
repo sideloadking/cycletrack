@@ -46,7 +46,9 @@ ELEV_MEDIAN_WINDOW_M = 30.0
 GRADE_BASELINE_M = 60.0
 # Minimum rise per ~25 m bin counted towards elevation gain. Applied to the
 # distance-resampled profile so the threshold is independent of point spacing.
-ELEVATION_GAIN_THRESHOLD = 1.0
+# 0.2 m per 25 m bin ≈ 0.8% grade: low enough that a real 1-2% climb counts,
+# high enough to reject the few-cm noise floor of a 25 m-smoothed profile.
+ELEVATION_GAIN_THRESHOLD = 0.2
 # Minimum track length (metres) before we even attempt elevation work.
 MIN_TRACK_M = 200.0
 # Grade sanity clamp (a road steeper than this is almost always a data error).
@@ -57,6 +59,11 @@ MAX_GRADE = 0.35  # 35%
 # reports ~0 W rather than a fake number. Descending points are also kept
 # out of every power aggregate (average/NP/best-N-minute/VO2max).
 DOWNHILL_GRADE = -0.01  # -1%
+
+# Grade above which a point counts as "climbing" for VAM and climb-segment
+# detection. Deliberately coarser than the elevation-gain threshold: VAM is a
+# metric of real climbs, not of every metre gained.
+CLIMB_GRADE = 0.03
 
 # UK bounds — EA National LIDAR coverage is England only (roughly).
 LIDAR_LAT_MIN, LIDAR_LAT_MAX = 49.85, 55.88
@@ -89,7 +96,7 @@ DEFAULT_RIDER = {
     "weight_kg": 75.0,
     "height_cm": 178.0,
     "bike_type": "road",
-    "sex": None,  # male/female feed the Keytel calorie equations
+    "sex": None,  # male/female feed the Keytel calorie + Banister TRIMP equations
     "resting_hr": 55,
     "max_hr": None,  # computed from age if unset
     "hr_zones": None,  # computed from max_hr if unset
@@ -112,7 +119,7 @@ UNCERTAINTY = {
     "cdA_rel_sigma": 0.20,       # fraction of CdA (uncalibrated)
     "cdA_rel_sigma_cal": 0.06,   # fraction of CdA (loop-calibrated)
     "crr_rel_sigma": 0.25,       # fraction of Crr (uncalibrated)
-    "crr_rel_sigma_cal": 0.08,   # fraction of Crr (climb-calibrated)
+    "crr_rel_sigma_cal": 0.08,   # fraction of Crr (loop-calibrated)
     "grade_sigma": 0.005,        # 0.5% grade uncertainty (lidar is finer, 25 m DEM needs this)
     "mass_sigma_kg": 1.5,        # rider + kit + bike mass uncertainty
     "rho_rel_sigma": 0.015,      # air-density rel. error (weather + elevation)
@@ -129,6 +136,10 @@ POWER_CURVE_MINUTES = [1, 2, 5, 10, 20, 30, 60]
 # Banister TRIMP + impulse-response fitness constants.
 TRIMP_HR_EXP = 1.92
 TRIMP_HR_COEF = 0.64
+# Banister's women's constants differ from the men's; TRIMP must use the
+# rider's sex rather than always applying the male weighting.
+TRIMP_HR_EXP_FEMALE = 1.67
+TRIMP_HR_COEF_FEMALE = 0.86
 CTL_TAU_DAYS = 42.0
 ATL_TAU_DAYS = 7.0
 

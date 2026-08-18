@@ -23,12 +23,12 @@ The mechanism a neighbouring product (e.g. Strava) could not truthfully copy: el
 - Runs on Windows: `python main.py` serves the UI at `http://127.0.0.1:8347` and opens the browser; an optional Tauri shell exists in `tauri/`.
 - Post-ride analysis only — no live/on-bike capture.
 - Every imported `.fit` runs the full pipeline: parse → map-match → lidar elevation → weather → power + uncertainty → metrics → route grouping.
-- One rider profile (age, weight, height, bike type, HR zones) and one bike, optionally calibrated by steep-climb and loop-CdA procedures.
+- One rider profile (age, weight, height, bike type, HR zones) and one bike, optionally calibrated by a loop-CdA fit (climb results are recorded for visibility only).
 - Charts use a lightweight, purpose-built SVG renderer with shared axes, uncertainty bands, hover cards, keyboard seeking, and linked replay cursors; the ride map is Leaflet with OSM/CARTO tiles; if tiles are unreachable the route line still draws.
 
 ## Capabilities and Constraints
 
-Confirmed capabilities: bulk `.fit` import; elevation from EA National LIDAR (England) with EU-DEM 25 m and Terrarium fallbacks; per-point power estimate with an uncertainty band and confidence tag (tight on climbs, wide on flats/descents, coasting flagged as "no pedalling required"); HR zones and Banister TRIMP load; CTL/ATL/TSB fitness/freshness; best-N-minute power curves with envelope; VO2max estimate; VAM; gradient distribution; personal records; cardiac-drift measure; interactive ride replay (timeline scrubber drives a map marker and linked chart cursors); automatic route grouping with side-by-side ride comparison (including reversed loops); profile and bike settings; two calibration procedures that tighten the bands over time.
+Confirmed capabilities: bulk `.fit` import; elevation from EA National LIDAR (England) with EU-DEM 25 m and Terrarium fallbacks; per-point power estimate with an uncertainty band and confidence tag (tight on climbs, wide on flats/descents, coasting flagged as "no pedalling required"); HR zones and Banister TRIMP load; CTL/ATL/TSB fitness/freshness; best-N-minute power curves with envelope; VO2max estimate; VAM; gradient distribution; personal records; cardiac-drift measure; interactive ride replay (timeline scrubber drives a map marker and linked chart cursors); automatic route grouping with side-by-side ride comparison (including reversed loops); profile and bike settings; a loop-CdA calibration that tightens the bands over time, with climb results recorded as diagnostics.
 
 Confirmed constraints: no power meter (no measured power, no cadence); no cloud sync, social features, or multi-user; lidar coverage is England only (other regions degrade to the 25 m DEM); timestamps are the device's local wall-clock; flat windy rides are genuinely uncertain and are flagged wide rather than pretended precise. The feature set is essentially complete — nothing major is planned or left undecided.
 

@@ -175,7 +175,10 @@ def compute_power(records, rider, bike, weather):
             rec["watts_est"] = 0.0
             rec["watts_lo"] = 0.0
             rec["watts_hi"] = 0.0
-            rec["confidence"] = "high"
+            # A descent cannot separate pedalling from coasting/braking, so
+            # the pedalling power is genuinely *unknown*, not known-to-be-zero:
+            # tag it low confidence rather than high.
+            rec["confidence"] = "low"
         else:
             rec["watts_est"] = float(watts_est[i])
             rec["watts_lo"] = float(watts_lo[i])
@@ -215,16 +218,16 @@ def _per_point_wind(records, weather, n):
     hours = np.array([ride_hour + (r["t"] - t0) / 3600.0 for r in records], dtype=float)
     hours = np.clip(hours, 0.0, 23.999)
     ws_pts = np.interp(hours, np.arange(len(spd)), spd)
-    # Circular interpolation of direction (shortest arc).
-    d0 = np.radians(drc)
-    x = np.cos(d0)
-    y = np.sin(d0)
+    # Circular interpolation of direction along the shortest arc, so a wrap
+    # across north (350° -> 10°) interpolates through 0° rather than the long
+    # way round through 180°.
     frac = hours - np.floor(hours)
     idx = np.floor(hours).astype(int)
     idx = np.clip(idx, 0, len(spd) - 2)
-    x_i = x[idx] * (1 - frac) + x[idx + 1] * frac
-    y_i = y[idx] * (1 - frac) + y[idx + 1] * frac
-    wd_pts = np.degrees(np.arctan2(y_i, x_i)) % 360.0
+    d0 = drc[idx]
+    d1 = drc[idx + 1]
+    delta = (d1 - d0 + 180.0) % 360.0 - 180.0
+    wd_pts = np.mod(d0 + frac * delta, 360.0)
     return ws_pts, wd_pts
 
 
@@ -239,8 +242,9 @@ def elevation_air_density(weather, elevs):
 
     Density falls ~1.2% per 100 m. Using one surface value for a ride with
     400 m of climbing biases the aero term ~5% on the high parts, which is
-    exactly where descents make aero dominant. Surface temperature/pressure
-    come from weather; lapse rate 0.0065 K/m (ISA)."""
+    exactly where descents make aero dominant. Sea-level temperature and
+    pressure come from weather (Open-Meteo ``pressure_msl``); lapse rate
+    0.0065 K/m (ISA)."""
     elevs = np.asarray(elevs, dtype=float)
     t0 = float(weather.get("temp_c", 15.0)) + 273.15
     p0 = float(weather.get("pressure_hpa", 1013.0)) * 100.0
@@ -263,7 +267,7 @@ def find_coast_segments(records, max_hr=None):
         speed = r.get("speed") or 0.0
         hr = r.get("hr")
         coasting = (
-            grade < -0.008
+            grade < config.DOWNHILL_GRADE
             and speed > 2.0
             and (max_hr is None or hr is None or hr < 0.78 * max_hr)
         )
@@ -279,15 +283,18 @@ def find_coast_segments(records, max_hr=None):
 
 
 def find_climb_segments(records, max_hr=None):
-    """Contiguous steep climbing runs at moderate speed."""
+    """Contiguous steep climbing runs at moderate speed.
+
+    Returns lists of indices into ``records`` (one list per contiguous run).
+    """
     segs = []
     cur = []
-    for r in records:
+    for i, r in enumerate(records):
         grade = r.get("grade") or 0.0
         speed = r.get("speed") or 0.0
-        climbing = grade > 0.03 and 1.5 < speed < 9.0
+        climbing = grade > config.CLIMB_GRADE and 1.5 < speed < 9.0
         if climbing:
-            cur.append(r)
+            cur.append(i)
         else:
             if len(cur) >= 20:
                 segs.append(cur)
@@ -533,42 +540,97 @@ def calibrate_loop(records, rider, bike, weather):
 
 
 def calibrate_climb(records, rider, bike, weather):
-    """Rolling-resistance fit from steep climbs (aero is small there).
+    """Climb Crr check — diagnostic only, never applied to the bike.
 
-    The rider's own power input is the missing term: on a sustained climb
-    ``W_rider = m·g·Δh + Crr·m·g·Δs + ½·ρ·CdA·∫v³dt``. W_rider comes from
-    the model's estimated watts — trustworthy on steep climbs, where
-    gravity dominates — so Crr is solved by difference. (The old formula
-    omitted W_rider and always over-estimated Crr, so it could never pass
-    acceptance.)"""
+    On a sustained climb the wheel-side energy balance is
+
+        W_wheel = Crr·m·g·∫cosθ·v dt + ∫(F_aero + F_grav + F_accel)·v dt
+
+    where W_wheel = η·W_leg: W_leg is the model's estimated (crank) power
+    integrated over the segment and η is the drivetrain efficiency. The aero,
+    gravity and acceleration terms are computed *exactly as compute_power
+    does* (smoothed speed, crosswind-aware aero, elevation air density and
+    the clamped acceleration), so solving for Crr inverts the model's own
+    wheel power and recovers the Crr the model assumed to produce those
+    watts. With no power meter there is no independent rider-power
+    measurement, so a climb cannot pin down the true Crr — this is a
+    self-consistency check, not a calibration: it is returned with
+    ``diagnostic=True`` and the storage layer records it without changing
+    the bike profile or tightening bands.
+    """
     mass = float(rider.get("weight_kg", 75.0)) + float(bike.get("mass_kg", 9.0)) + KIT_MASS_KG
-    rho = weather_air_density(weather)
+    eff = float(bike.get("drivetrain_efficiency", 0.97))
     cdA = float(bike.get("cdA", 0.35))
     segs = find_climb_segments(records, rider.get("max_hr") or _default_max_hr(rider))
     if len(segs) < 1:
         return None
 
+    # Reproduce the per-point wheel-power decomposition compute_power used so
+    # the solve below inverts the exact same model (wind, acceleration, air
+    # density and smoothing all included).
+    n = len(records)
+    speeds = np.array([r.get("speed") or 0.0 for r in records], dtype=float)
+    grades = np.array([r.get("grade") or 0.0 for r in records], dtype=float)
+    elevs = np.array([r.get("elev") or 0.0 for r in records], dtype=float)
+    lats = np.array([r["lat"] for r in records], dtype=float)
+    lons = np.array([r["lon"] for r in records], dtype=float)
+    ts = np.array([r["t"] for r in records], dtype=float)
+
+    v = _smoothed_speed(speeds)
+    brg = _bearing(lats, lons)
+    ws_pts, wd_pts = _per_point_wind(records, weather, n)
+    phi = np.radians(wd_pts) - brg
+    v_along = v + ws_pts * np.cos(phi)
+    v_air = np.hypot(v_along, ws_pts * np.sin(phi))
+    rho = elevation_air_density(weather, elevs)
+
+    accel = np.zeros(n)
+    dt = np.diff(ts)
+    dv = np.diff(v)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        a = np.where(dt > 0, dv / np.maximum(dt, 1e-6), 0.0)
+    accel[:-1] = np.clip(a, -3.0, 3.0)
+
+    theta = np.arctan(np.clip(grades, -1.0, 1.0))
+    # Crr-independent wheel power (aero + gravity + acceleration) and the
+    # Crr multiplier (rolling-resistance force × speed).
+    known = (0.5 * rho * cdA * v_air * v_along
+             + mass * G * np.sin(theta)
+             + mass * 1.05 * accel) * v
+    mult = mass * G * np.cos(theta) * v
+
     crr_est = []
-    for seg in segs:
-        dh, ds, v3dt = _segment_integrals(seg, rho)
-        if ds > 50 and not any("watts_est" in p for p in seg):
-            continue
-        # Rider work from estimated watts (trapezoid over time).
-        w_work = 0.0
-        for i in range(len(seg) - 1):
-            a, b = seg[i], seg[i + 1]
-            dt = b["t"] - a["t"]
-            w_work += 0.5 * ((a.get("watts_est") or 0.0) + (b.get("watts_est") or 0.0)) * dt
-        climb = 0.0
-        for i in range(len(seg) - 1):
-            d = seg[i + 1].get("elev", 0.0) - seg[i].get("elev", 0.0)
+    for idx in segs:
+        idx = np.asarray(idx, dtype=int)
+        # Acceptance filter (unchanged): real distance and real climb.
+        ds = climb = 0.0
+        for j in range(len(idx) - 1):
+            a, b = records[idx[j]], records[idx[j + 1]]
+            d = (b.get("dist") or 0.0) - (a.get("dist") or 0.0)
             if d > 0:
-                climb += d
-        if ds > 50 and climb > 1.0 and w_work > 0:
-            # W_rider = m g Δh + Crr m g Δs + 0.5 ρ CdA ∫v³dt  => solve Crr.
-            aero = 0.5 * rho * cdA * v3dt
-            crr = (w_work - mass * G * climb - aero) / (mass * G * ds)
-            crr_est.append(crr)
+                ds += d
+            e = b.get("elev", 0.0) - a.get("elev", 0.0)
+            if e > 0:
+                climb += e
+        if ds <= 50 or climb <= 1.0:
+            continue
+
+        # Leg work from the model's estimated (crank) watts, trapezoid over
+        # time; convert to wheel work with the same η the model used.
+        w = np.array([records[i].get("watts_est") or 0.0 for i in idx], dtype=float)
+        if not np.isfinite(w).all():
+            continue
+        dt_seg = np.diff(ts[idx])
+        w_wheel = eff * float(np.sum(dt_seg * 0.5 * (w[:-1] + w[1:])))
+        if w_wheel <= 0:
+            continue
+
+        known_work = float(np.sum(dt_seg * 0.5 * (known[idx][:-1] + known[idx][1:])))
+        mult_work = float(np.sum(dt_seg * 0.5 * (mult[idx][:-1] + mult[idx][1:])))
+        if mult_work <= 0:
+            continue
+        crr = (w_wheel - known_work) / mult_work
+        crr_est.append(crr)
 
     if not crr_est:
         return None
@@ -583,6 +645,7 @@ def calibrate_climb(records, rider, bike, weather):
         "n_segments": len(crr_est),
         "n_points": sum(len(s) for s in segs),
         "crr_sigma": crr_sigma,
+        "diagnostic": True,
     }
 
 

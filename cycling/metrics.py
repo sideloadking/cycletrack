@@ -57,6 +57,12 @@ def _hr_metrics(records, rider):
     max_hr = rider.get("max_hr") or default_max_hr(rider.get("age"))
     rest_hr = float(rider.get("resting_hr", 55) or 55)
     zones = rider.get("hr_zones") or default_hr_zones(max_hr, rest_hr)
+    # Banister's TRIMP constants are sex-specific; default to the male
+    # weighting only when the rider's sex is unknown.
+    if str(rider.get("sex") or "").strip().lower() == "female":
+        trimp_coef, trimp_exp = config.TRIMP_HR_COEF_FEMALE, config.TRIMP_HR_EXP_FEMALE
+    else:
+        trimp_coef, trimp_exp = config.TRIMP_HR_COEF, config.TRIMP_HR_EXP
 
     trimp = 0.0
     zone_seconds = [0.0] * 5
@@ -70,7 +76,7 @@ def _hr_metrics(records, rider):
         if prev_t is not None:
             dt = max(0.0, min(t - prev_t, 10.0))
             hrr = max(0.0, min(1.0, (hr - rest_hr) / max(1, max_hr - rest_hr)))
-            trimp += (dt / 60.0) * hrr * config.TRIMP_HR_COEF * math.exp(config.TRIMP_HR_EXP * hrr)
+            trimp += (dt / 60.0) * hrr * trimp_coef * math.exp(trimp_exp * hrr)
             zi = hr_zone_index(hr, zones)
             if zi is not None:
                 zone_seconds[zi] += dt
@@ -168,17 +174,21 @@ def _normalised_power(w, ts):
     n = len(w)
     if n < 2:
         return 0.0
-    # 30 s rolling mean of w^4 using a cumulative-time window.
-    w4 = w ** 4
-    cum = np.concatenate(([0.0], np.cumsum(np.diff(ts) * 0.5 * (w4[:-1] + w4[1:]))))
-    # simpler: rolling mean by index over ~30 s at 1 Hz
-    window = 30
-    if n <= window:
-        return float((np.mean(w4)) ** 0.25)
-    kernel = np.ones(window) / window
-    roll = np.convolve(w4, kernel, mode="full")[:n]
-    roll[:window] = np.cumsum(w4[:window]) / np.arange(1, window + 1)
-    return float((np.mean(roll)) ** 0.25)
+    # Coggan normalised power: a 30 s rolling *time* mean of power, raised to
+    # the 4th power, averaged over time, then the 4th root. Smoothing comes
+    # BEFORE the 4th power (not after): NP should emphasise sustained surges,
+    # not single-second spikes. The window is time-based so "30 s" stays
+    # meaningful across FIT gaps and the pedalling-time rebase in _power_metrics.
+    w = np.asarray(w, dtype=float)
+    ts = np.asarray(ts, dtype=float)
+    w_smooth = _rolling_mean_time(ts, w, 30.0)
+    w4 = w_smooth ** 4
+    if ts[-1] <= ts[0]:
+        return float(np.mean(w4) ** 0.25)
+    dt = np.maximum(np.diff(ts), 0.0)
+    integral = float(np.sum(dt * 0.5 * (w4[:-1] + w4[1:])))
+    span = float(ts[-1] - ts[0])
+    return float((integral / span) ** 0.25)
 
 
 def _best_power(w, ts, seconds):
@@ -426,7 +436,7 @@ def cardiac_drift(records, rider):
 
 def _climb_metrics(records):
     grades = np.array([r.get("grade") or 0.0 for r in records])
-    climbing = grades > 0.03
+    climbing = grades > config.CLIMB_GRADE
     vam = 0.0
     if climbing.any():
         climb_idx = np.where(climbing)[0]

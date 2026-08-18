@@ -6,6 +6,7 @@ gracefully; the only hard failures are "not a FIT file" and "no GPS points".
 """
 
 import hashlib
+import math
 import pathlib
 import time
 
@@ -166,10 +167,12 @@ def recalculate_rides(rider, bike):
 
 
 def try_auto_calibrate(ride_id, records, rider, bike, weather):
-    """Run the two calibration procedures on suitable segments; keep good fits.
+    """Run the loop calibration and the climb diagnostic on suitable segments.
 
-    Only fits whose parameters land in physically-sane ranges are applied, so a
-    windy or brake-heavy descent cannot corrupt the bike profile.
+    Only loop fits are applied to the bike; the climb result is recorded for
+    visibility but never applied (see power.calibrate_climb). Fits whose
+    parameters land outside physically-sane ranges are rejected, so a windy
+    or brake-heavy descent cannot corrupt the bike profile.
     """
     results = []
     loop = power_mod.calibrate_loop(records, rider, bike, weather)
@@ -177,8 +180,12 @@ def try_auto_calibrate(ride_id, records, rider, bike, weather):
         storage.save_calibration(ride_id, loop)
         results.append(loop)
 
+    # The climb procedure is diagnostic only (see calibrate_climb): it is
+    # recorded for visibility even when a loop fit also exists on this ride,
+    # but it is never applied to the bike profile. The loop stays
+    # authoritative (see storage.get_ride_calibration).
     climb = power_mod.calibrate_climb(records, rider, bike, weather)
-    if _acceptable_climb(climb) and not results:
+    if _acceptable_climb(climb):
         storage.save_calibration(ride_id, climb)
         results.append(climb)
     return results
@@ -196,11 +203,22 @@ def _acceptable_loop(calib):
 
 
 def _acceptable_climb(calib):
+    """Whether a climb diagnostic is worth recording.
+
+    The climb result is never applied to the bike (see calibrate_climb), so
+    this is a recording gate, not an apply gate: it keeps results with enough
+    segments and a finite, positive implied Crr, but deliberately allows a
+    wider band than _acceptable_loop because the climb solve ignores wind and
+    acceleration and can legitimately overshoot the assumed Crr on a gusty or
+    accelerating climb.
+    """
     if not calib:
         return False
+    crr = calib["crr"]
     return (
         calib.get("n_segments", 0) >= 2
-        and 0.002 <= calib["crr"] <= 0.01
+        and math.isfinite(crr)
+        and 0.0005 <= crr <= 0.05
     )
 
 

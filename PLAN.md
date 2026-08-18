@@ -106,11 +106,15 @@ computed from power carries a confidence tag.
 
 Two procedures, done on suitable rides:
 
-1. **Steep-climb test** — on a sustained steep climb, gravity dominates and
-   the estimate is near-exact. Used to pin down rolling resistance.
+1. **Steep-climb check** — on a sustained steep climb gravity dominates, but
+   the climb watts are themselves produced by the model's assumed Crr, so a
+   climb cannot independently measure rolling resistance without a power
+   meter. It is recorded as a diagnostic only and never applied to the bike.
 2. **Loop CdA fit** — ride the same loop in two directions and require the
    physics to close the energy budget; the residual gives an effective CdA
-   (wind baked in as a per-ride offset).
+   (wind baked in as a per-ride offset). This is the calibration that can
+   genuinely measure Crr and CdA, because coasting points have zero rider
+   power by construction.
 
 Calibrated rides get tighter bands; uncalibrated rides get the default wide
 assumptions, clearly labelled.
@@ -144,8 +148,8 @@ No FTP, no real TSS — there's no power meter, so we don't fake those numbers.
 "Am I fitter?" is answered by watts produced at a fixed heart rate over time:
 more watts at the same HR = fitter. This is the main chart. It's graded:
 
-- **Confident:** watts@fixed-HR from calibrated climbs — gravity-dominated,
-  tight band.
+- **Confident:** watts@fixed-HR on a loop-calibrated bike — the loop fit is an
+  independent measurement, so the band is tight.
 - **Context only:** power@VO2max estimates and HR response on a repeated
   known route (weather-normalized).
 
@@ -192,7 +196,8 @@ into Rust, and the shell still feels native.
    stage, show ride list and per-ride summary.
 3. **Concrete metrics** — distance, time, climb, HR zones, TRIMP, records.
 4. **Power engine** — physics model + uncertainty bands, weather fetch.
-5. **Calibration** — steep-climb and loop-CdA procedures.
+5. **Calibration** — loop-CdA fit (applies to the bike) plus a recorded climb
+   diagnostic.
 6. **Trends** — watts@fixed-HR headline, power curves, fitness/freshness.
 7. **Shell** — Tauri window, tray, autostart, polish.
 

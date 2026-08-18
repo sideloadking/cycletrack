@@ -23,6 +23,12 @@ _DEFAULTS = {
     "source": "defaults",
 }
 
+# Bump whenever the fetch logic changes the *meaning* of a cached field
+# (pressure_hpa switched from surface_pressure to pressure_msl, and the
+# ride-local date/hour became timezone-aware): the on-disk cache must not
+# re-serve old entries under their previous semantics.
+_CACHE_VERSION = "v2"
+
 
 def _cache():
     try:
@@ -44,16 +50,78 @@ def _tz_name(lat, lon):
     return "auto"
 
 
+def _local_time(when_unix, tz_name):
+    """Unix time as an aware datetime in tz_name, falling back to the
+    machine's local wall-clock when the zone is unknown (e.g. "auto")."""
+    try:
+        from zoneinfo import ZoneInfo
+        return datetime.datetime.fromtimestamp(when_unix, tz=ZoneInfo(tz_name))
+    except Exception:
+        return datetime.datetime.fromtimestamp(when_unix)
+
+
+_TZ_CACHE = {}
+
+
+def _resolve_timezone(lat, lon):
+    """Resolve Open-Meteo's "auto" to a concrete IANA zone for (lat, lon).
+
+    Open-Meteo computes the location's zone itself, so a cheap single-day
+    probe is enough to learn it; the answer depends only on the location and
+    is cached in-process. On any failure this returns "auto" and the caller
+    degrades to the importing machine's clock (the previous best effort).
+    """
+    key = f"{lat:.3f},{lon:.3f}"
+    cached = _TZ_CACHE.get(key)
+    if cached is not None:
+        return cached
+    tz = "auto"
+    try:
+        r = requests.get(
+            config.OPEN_METEO_ARCHIVE,
+            params={
+                "latitude": lat,
+                "longitude": lon,
+                "start_date": "2020-01-01",
+                "end_date": "2020-01-01",
+                "hourly": "temperature_2m",
+                "timezone": "auto",
+            },
+            timeout=config.HTTP_TIMEOUT,
+        )
+        r.raise_for_status()
+        tz = r.json().get("timezone") or "auto"
+    except Exception:
+        tz = "auto"
+    _TZ_CACHE[key] = tz
+    return tz
+
+
 def fetch_weather(lat, lon, when_unix):
-    """Return weather at (lat, lon) around the given local-wall-clock time."""
+    """Return weather at (lat, lon) around the given ride-local time."""
     try:
         lat, lon = float(lat), float(lon)
-        when = datetime.datetime.fromtimestamp(when_unix)
+        when_unix = float(when_unix)
+    except (TypeError, ValueError, OSError):
+        return dict(_DEFAULTS)
+
+    # The request date must be the *ride's* local date, not the importing
+    # machine's: a ride shortly after UTC midnight is still "yesterday" or
+    # "tomorrow" in the ride's zone, and asking for the machine's day would
+    # fetch the wrong temperature/pressure/wind. UK rides have a known zone;
+    # elsewhere "auto" is resolved up front so the request targets the right
+    # day.
+    tz_name = _tz_name(lat, lon)
+    if tz_name == "auto":
+        tz_name = _resolve_timezone(lat, lon)
+
+    try:
+        when = _local_time(when_unix, tz_name)
     except (TypeError, ValueError, OSError):
         return dict(_DEFAULTS)
 
     cache = _cache()
-    key = f"{lat:.3f},{lon:.3f},{when:%Y-%m-%d}"
+    key = f"{_CACHE_VERSION}:{lat:.3f},{lon:.3f},{when:%Y-%m-%d}"
     if key in cache:
         return cache[key]
 
@@ -66,14 +134,19 @@ def fetch_weather(lat, lon, when_unix):
                 "longitude": lon,
                 "start_date": when.strftime("%Y-%m-%d"),
                 "end_date": when.strftime("%Y-%m-%d"),
-                "hourly": "temperature_2m,wind_speed_10m,wind_direction_10m,surface_pressure,wind_gusts_10m",
-                "timezone": _tz_name(lat, lon),
+                "hourly": "temperature_2m,wind_speed_10m,wind_direction_10m,pressure_msl,wind_gusts_10m",
+                "timezone": tz_name,
             },
             timeout=config.HTTP_TIMEOUT,
         )
         r.raise_for_status()
-        data = r.json().get("hourly", {})
+        payload = r.json()
+        data = payload.get("hourly", {})
         times = data.get("time") or []
+        # Index with the ride's local hour in the timezone the response
+        # actually used (resolved from "auto" when applicable).
+        resp_tz = payload.get("timezone") or tz_name
+        when = _local_time(when_unix, resp_tz)
         hour = when.hour
         idx = hour if hour < len(times) else (len(times) - 1 if times else 0)
 
@@ -86,7 +159,7 @@ def fetch_weather(lat, lon, when_unix):
         temp = _val("temperature_2m")
         wind = _val("wind_speed_10m")
         wdir = _val("wind_direction_10m")
-        pres = _val("surface_pressure")
+        pres = _val("pressure_msl")
         gust = _val("wind_gusts_10m")
 
         # Per-ride wind uncertainty: the spread of the day's hourly wind

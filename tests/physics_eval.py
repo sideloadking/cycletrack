@@ -357,6 +357,70 @@ def M13_wind_interpolation(physics):
             "mae_interpolated": round(b, 1), "n": 7200}
 
 
+def M14_climb_nondefault_crr(physics):
+    """The climb procedure must be diagnostic, not a measurement: with a true
+    Crr different from the bike default, its watts come from the model's
+    assumed Crr, so it must echo the default rather than claim to recover the
+    injected value — and it must be flagged diagnostic (never applied)."""
+    phys = dict(physics, crr=0.004, wind_speed_mps=0.0, wind_dir_deg=0.0)
+    seg = [{"heading_deg": 0, "grade": 0.07, "dur_s": 400, "power": 260.0},
+           {"heading_deg": 0, "grade": 0.02, "dur_s": 60, "power": 120.0},
+           {"heading_deg": 0, "grade": 0.06, "dur_s": 400, "power": 250.0}]
+    records = simulate(seg, phys, seed=5)
+    out = power_mod.compute_power(records, RIDER, BIKE, weather_from(0.0, 0.0))
+    calib = power_mod.calibrate_climb(out, RIDER, BIKE, weather_from(0.0, 0.0))
+    if not calib:
+        return {"ok": False, "reason": "no climb segments", "crr": None}
+    default_crr = BIKE["crr"]
+    # It must land nearer the assumed default than the injected truth — i.e.
+    # it echoes the model's assumption rather than measuring the true Crr.
+    echo_default = abs(calib["crr"] - default_crr) < abs(calib["crr"] - phys["crr"])
+    return {
+        "ok": calib.get("diagnostic") is True and echo_default,
+        "crr": round(calib["crr"], 5),
+        "true_crr": phys["crr"],
+        "default_crr": default_crr,
+        "diagnostic": calib.get("diagnostic") is True,
+        "n_segments": calib.get("n_segments"),
+    }
+
+
+def M15_np_order():
+    """Coggan NP must smooth power for 30 s *before* raising to the 4th power:
+    a ride alternating 100/300 W every second has a 30 s mean of ~200 W, so NP
+    is ~200 W — not the ~253 W from raising to the 4th power first."""
+    ts = np.arange(0.0, 600.0, 1.0)
+    w = np.where(np.arange(600) % 2 == 0, 300.0, 100.0)
+    np_val = metrics_mod._normalised_power(w, ts)
+    return {"ok": abs(np_val - 200.0) < 5.0, "np": round(np_val, 1), "expected": 200.0}
+
+
+def M16_climb_windy_echo(physics):
+    """The climb diagnostic is a self-consistency echo even in wind: with the
+    bike assuming a high Crr (0.008) and a 5 m/s crosswind, the recovered Crr
+    must stay near the assumed value — the old wind-blind solve overshot to
+    ~0.0105."""
+    phys = dict(physics, crr=0.005, wind_speed_mps=5.0, wind_dir_deg=90.0)
+    bike = dict(BIKE, crr=0.008)
+    seg = [{"heading_deg": 0, "grade": 0.07, "dur_s": 400, "power": 260.0},
+           {"heading_deg": 0, "grade": 0.02, "dur_s": 60, "power": 120.0},
+           {"heading_deg": 0, "grade": 0.06, "dur_s": 400, "power": 250.0}]
+    records = simulate(seg, phys, seed=5)
+    out = power_mod.compute_power(records, RIDER, bike, weather_from(5.0, 90.0))
+    calib = power_mod.calibrate_climb(out, RIDER, bike, weather_from(5.0, 90.0))
+    if not calib:
+        return {"ok": False, "reason": "no climb segments", "crr": None}
+    err = abs(calib["crr"] - bike["crr"])
+    return {
+        "ok": calib.get("diagnostic") is True and err <= 0.001,
+        "crr": round(calib["crr"], 5),
+        "assumed_crr": bike["crr"],
+        "err": round(err, 5),
+        "diagnostic": calib.get("diagnostic") is True,
+        "n_segments": calib.get("n_segments"),
+    }
+
+
 def M10_calibrated_bands(physics):
     """A calibrated bike must get strictly narrower bands than the same
     bike uncalibrated, while coverage stays honest (>= 0.90)."""
@@ -430,9 +494,11 @@ def M8_wind_reapply(records, physics):
             "mae_reapplied": round(b, 1), "n": 1020}
 
 
-def M9_climb_calibration(physics):
-    """The climb-Crr calibration must recover crr on a steep climb, using
-    the model's own (gravity-dominated) power estimate as energy input."""
+def M9_climb_diagnostic(physics):
+    """The climb procedure is a diagnostic, not a measurement: its watts are
+    produced by the model's assumed Crr, so the result must be flagged
+    diagnostic and echo the bike's current Crr (a self-consistency check)
+    rather than claim to recover anything independently."""
     calm = dict(physics, wind_speed_mps=0.0, wind_dir_deg=0.0)
     seg = [{"heading_deg": 0, "grade": 0.07, "dur_s": 400, "power": 260.0},
            {"heading_deg": 0, "grade": 0.02, "dur_s": 60, "power": 120.0},
@@ -441,11 +507,17 @@ def M9_climb_calibration(physics):
     out = power_mod.compute_power(records, RIDER, BIKE, weather_from(0.0, 0.0))
     calib = power_mod.calibrate_climb(out, RIDER, BIKE, weather_from(0.0, 0.0))
     if not calib:
-        return {"ok": False, "reason": "no climb segments", "crr_err": None}
-    err = abs(calib["crr"] - physics["crr"])
-    return {"ok": err <= 0.003, "crr_err": round(err, 5),
-            "n_segments": calib["n_segments"],
-            "crr_sigma": round(calib.get("crr_sigma") or 0.0, 5)}
+        return {"ok": False, "reason": "no climb segments", "crr": None}
+    err = abs(calib["crr"] - BIKE["crr"])
+    return {
+        "ok": calib.get("diagnostic") is True and err <= 0.003,
+        "crr": round(calib["crr"], 5),
+        "bike_crr": BIKE["crr"],
+        "err_vs_bike": round(err, 5),
+        "diagnostic": calib.get("diagnostic") is True,
+        "n_segments": calib["n_segments"],
+        "crr_sigma": round(calib.get("crr_sigma") or 0.0, 5),
+    }
 
 
 def M5_coasting(records, model_records):
@@ -549,11 +621,14 @@ def main():
     checks["M6 real .fit plausibility"] = M6_real_ride()
     checks["M7 high-elevation accuracy"] = M7_high_elevation(phys)
     checks["M8 wind reapply"] = M8_wind_reapply(loop, phys)
-    checks["M9 climb calibration"] = M9_climb_calibration(phys)
+    checks["M9 climb diagnostic"] = M9_climb_diagnostic(phys)
     checks["M10 calibrated bands"] = M10_calibrated_bands(phys)
     checks["M11 power curve"] = M11_power_curve(phys)
     checks["M12 robust watts@HR"] = M12_robust_watts_at_hr()
     checks["M13 wind interpolation"] = M13_wind_interpolation(phys)
+    checks["M14 climb non-default crr diagnostic"] = M14_climb_nondefault_crr(phys)
+    checks["M15 NP order"] = M15_np_order()
+    checks["M16 climb windy echo"] = M16_climb_windy_echo(phys)
 
     print("=" * 62)
     for name, m in checks.items():

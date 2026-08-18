@@ -8,3 +8,4 @@ scipy>=1.8
 requests>=2.28
 pillow>=9.0
 pydantic>=2.0
+tzdata>=2023.3  # IANA tz database for zoneinfo on Windows (weather local-time lookup)

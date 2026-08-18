@@ -308,10 +308,178 @@ def test_calories():
           f"HR-based {expected_hr_kcal:.0f} kcal, female {female['kcal']} kcal")
 
 
+def test_elevation_gain_shallow_climb():
+    """Elevation gain must count a 2% climb. The old 1 m / 25 m threshold was
+    a 4% grade cutoff, so every 1-4% climb contributed zero."""
+    from cycling import elevation as elevation_mod
+    dist = np.linspace(0.0, 500.0, 200)
+    elev = 0.02 * dist  # steady 2% grade = 10 m rise over 500 m
+    gain = elevation_mod._elevation_gain(dist, elev, threshold=config.ELEVATION_GAIN_THRESHOLD)
+    assert 9.0 <= gain <= 10.5, gain
+    print(f"elevation gain OK: 2% climb -> {gain:.1f} m (expected ~10)")
+
+
+def test_trimp_sex():
+    """TRIMP must use Banister's female constants for female riders."""
+    records = make_steady_ride(seconds=3600, watts=200.0, hr=150.0, include_hr=True)
+    male = metrics_mod._hr_metrics(records, {"age": 40, "resting_hr": 55, "max_hr": 180, "sex": "male"})
+    female = metrics_mod._hr_metrics(records, {"age": 40, "resting_hr": 55, "max_hr": 180, "sex": "female"})
+    assert male["trimp"] > 0 and female["trimp"] > 0
+    assert abs(female["trimp"] - male["trimp"]) > 1e-6, (male["trimp"], female["trimp"])
+    print(f"TRIMP sex OK: male {male['trimp']:.1f}, female {female['trimp']:.1f}")
+
+
+def test_wind_direction_wrap():
+    """Hourly wind direction must interpolate across north along the short
+    arc (350° -> 10° passes through 0°, never through 180°)."""
+    weather = {"wind_speed_mps": 5.0, "wind_dir_deg": 0.0, "ride_hour": 0,
+               "wind_speed_hourly": [5.0, 5.0, 5.0],
+               "wind_dir_hourly": [350.0, 10.0, 20.0]}
+    records = [{"t": 0.0}, {"t": 1800.0}, {"t": 3600.0}]
+    ws, wd = power_mod._per_point_wind(records, weather, 3)
+    assert wd[0] > 340.0 and wd[0] < 360.0, wd
+    assert abs(wd[1]) < 5.0 or abs(wd[1] - 360.0) < 5.0, wd  # ~0° midpoint
+    assert wd[2] > 0.0 and wd[2] < 20.0, wd
+    print(f"wind wrap OK: dir {wd[0]:.1f} -> {wd[1]:.1f} -> {wd[2]:.1f}")
+
+
+def test_non_uk_weather_date():
+    """A non-UK ride whose UTC instant falls on a different local date must
+    fetch weather for the ride's local date, not the importing machine's."""
+    import datetime
+    from unittest import mock
+    from cycling import weather as weather_mod
+
+    # New York (UTC-5 standard time): 2024-01-02 02:00 UTC is still
+    # 2024-01-01 21:00 locally, so the UTC date differs from the ride's
+    # local date and the request must target the latter.
+    when_unix = datetime.datetime(2024, 1, 2, 2, 0, 0,
+                                  tzinfo=datetime.timezone.utc).timestamp()
+
+    calls = []
+
+    class _FakeResp:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return self._payload
+
+    def _fake_get(url, params=None, timeout=None):
+        params = dict(params or {})
+        calls.append(params)
+        if params.get("hourly") == "temperature_2m":
+            # The timezone-resolution probe.
+            return _FakeResp({"timezone": "America/New_York",
+                              "hourly": {"time": ["2020-01-01T00:00"],
+                                         "temperature_2m": [0.0]}})
+        start = params.get("start_date")
+        return _FakeResp({
+            "timezone": "America/New_York",
+            "hourly": {
+                "time": [f"{start}T{i:02d}:00" for i in range(24)],
+                "temperature_2m": [5.0] * 24,
+                "wind_speed_10m": [0.0] * 24,
+                "wind_direction_10m": [0.0] * 24,
+                "pressure_msl": [1013.0] * 24,
+                "wind_gusts_10m": [0.0] * 24,
+            },
+        })
+
+    weather_mod._TZ_CACHE.clear()
+    with mock.patch.object(weather_mod.requests, "get", side_effect=_fake_get), \
+            mock.patch.object(weather_mod, "_cache", return_value={}), \
+            mock.patch.object(weather_mod, "_save_cache"):
+        result = weather_mod.fetch_weather(40.71, -74.01, when_unix)
+
+    real = [c for c in calls if c.get("hourly") != "temperature_2m"]
+    assert real, "expected a real fetch after the timezone probe"
+    assert real[0]["start_date"] == "2024-01-01", real[0]
+    assert real[0]["end_date"] == "2024-01-01", real[0]
+    assert real[0]["timezone"] == "America/New_York", real[0]
+    assert result["ride_hour"] == 21, result["ride_hour"]
+    assert result["source"] == "open-meteo"
+    print(f"non-UK weather date OK: fetched {real[0]['start_date']} "
+          f"(ride local), ride_hour {result['ride_hour']}")
+
+
+def test_both_segments_calibration_recorded():
+    """A ride with both a valid loop and a climb diagnostic must record both,
+    while the loop stays authoritative (get_ride_calibration) and only the
+    loop marks the bike calibrated."""
+    import pathlib
+    import shutil
+    import tempfile
+    from unittest import mock
+    from cycling import config, pipeline, storage
+
+    tmp = pathlib.Path(tempfile.mkdtemp(prefix="cycling_test_"))
+    orig_db = config.DB_PATH
+    try:
+        config.DB_PATH = tmp / "cycling.db"
+        storage._conn = None
+        storage.init_db()
+        storage.save_profile(
+            {"age": 40, "weight_kg": 75.0, "height_cm": 178.0,
+             "bike_type": "road", "sex": None, "resting_hr": 55,
+             "max_hr": 180, "hr_zones": None},
+            {"id": 1, "name": "Road bike", "mass_kg": 9.0, "crr": 0.005,
+             "cdA": 0.35, "drivetrain_efficiency": 0.97,
+             "calibrated": False},
+        )
+        loop = {"type": "loop", "crr": 0.0045, "cdA": 0.33, "r2": 0.9,
+                "n_segments": 4, "n_points": 400, "wind_recovered": True,
+                "wind_mps": 3.0, "wind_dir_deg": 90.0,
+                "crr_sigma": 0.0005, "cdA_sigma": 0.01}
+        # 0.0105 is a climb echo that overshoots the assumed Crr (wind +
+        # acceleration are ignored in the climb solve); it must still be
+        # recorded because the diagnostic is never applied to the bike.
+        climb = {"type": "climb", "crr": 0.0105, "cdA": 0.35, "r2": None,
+                 "n_segments": 2, "n_points": 100, "crr_sigma": 0.0002,
+                 "diagnostic": True}
+        with mock.patch.object(pipeline.power_mod, "calibrate_loop",
+                               return_value=loop), \
+                mock.patch.object(pipeline.power_mod, "calibrate_climb",
+                                  return_value=climb):
+            results = pipeline.try_auto_calibrate(7, [], {}, {}, {})
+
+        types = sorted(r["type"] for r in storage.list_calibrations())
+        assert types == ["climb", "loop"], types
+        assert sorted(r["type"] for r in results) == ["climb", "loop"]
+
+        auth = storage.get_ride_calibration(7)
+        assert auth is not None and auth["type"] == "loop", auth
+        assert auth.get("wind_recovered") is True  # loop's wind is not shadowed
+
+        _, bike = storage.get_profile()
+        assert bike["calibrated"] == 1
+        assert abs(bike["crr"] - 0.0045) < 1e-9  # loop applied, climb did not
+        print(f"both-segments calibration OK: recorded {types}, "
+              f"authoritative {auth['type']}")
+    finally:
+        conn = getattr(storage, "_conn", None)
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        storage._conn = None
+        config.DB_PATH = orig_db
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 if __name__ == "__main__":
     test_compressed_timestamp_fit()
     test_route_detection()
     test_loop_calibration()
     test_cardiac_drift()
     test_calories()
+    test_elevation_gain_shallow_climb()
+    test_trimp_sex()
+    test_wind_direction_wrap()
+    test_non_uk_weather_date()
+    test_both_segments_calibration_recorded()
     print("\nAll backend checks passed.")

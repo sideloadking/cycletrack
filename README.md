@@ -65,10 +65,15 @@ the estimate is genuinely uncertain. Every point therefore carries a band
   guess. Downhill points are also kept out of every power aggregate
   (average, normalized power, best-N-minute, VO2max, watts@HR).
 
-Two calibration procedures tighten the bands over time: a **steep-climb** test
-(pins rolling resistance) and a **loop CdA fit** (closes the energy budget on
-coasting descents). Fits that land outside physically-sane ranges are rejected
-so a brake-heavy descent never corrupts the bike profile.
+Two procedures run on suitable rides. The **loop CdA fit** is the real
+measurement: it closes the energy budget on coasting descents and jointly
+recovers Crr, CdA and the effective wind — the only calibration that does not
+depend on the model's own assumptions. The **steep-climb check** is recorded
+for visibility but is *diagnostic only*: with no power meter the climb watts
+are produced by the model's assumed Crr, so a climb cannot independently pin
+down rolling resistance, and the result is never applied to the bike. Fits
+that land outside physically-sane ranges are rejected so a brake-heavy descent
+never corrupts the bike profile.
 
 ### Headline trend
 

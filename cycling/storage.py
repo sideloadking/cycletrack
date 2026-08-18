@@ -417,12 +417,19 @@ def _summarize(row):
 # ---------------------------------------------------------------------------
 
 def get_ride_calibration(ride_id):
-    """Most recent calibration params for a ride (dict) or None."""
+    """Most recent *loop* calibration params for a ride (dict) or None.
+
+    A ride can record both a loop fit and a climb diagnostic. The loop is the
+    authoritative one — only it measures the bike independently and carries
+    ``wind_recovered`` — so a climb must never shadow it here (this is used
+    by ``recalculate_rides`` to re-apply the recovered wind).
+    """
     with _lock:
         conn = _connect()
         row = conn.execute(
             "SELECT params FROM calibration WHERE ride_id = ? "
-            "ORDER BY created_at DESC, id DESC LIMIT 1", (ride_id,)
+            "ORDER BY (type = 'loop') DESC, created_at DESC, id DESC LIMIT 1",
+            (ride_id,),
         ).fetchone()
     if row is None or not row["params"]:
         return None
@@ -440,8 +447,12 @@ def save_calibration(ride_id, calib):
                VALUES (?,?,?,?,?)""",
             (ride_id, calib["type"], json.dumps(calib), calib.get("r2"), _now()),
         )
-        if calib["type"] in ("loop", "climb"):
-            # Apply fitted parameters to the bike profile.
+        if calib["type"] == "loop":
+            # Only the loop fit is an independent measurement of the bike's
+            # parameters: it uses coasting points whose rider power is zero by
+            # construction. The climb procedure is diagnostic — its watts come
+            # from the model's assumed Crr, so it cannot measure the true Crr
+            # and must not overwrite the profile.
             conn.execute(
                 "UPDATE bike SET crr = ?, cdA = ?, calibrated = 1, calibration = ? WHERE id = 1",
                 (calib["crr"], calib["cdA"], json.dumps(calib)),
