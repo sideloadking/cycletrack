@@ -1106,6 +1106,11 @@ function smoothSeries(values, times = null, windowSeconds = 16) {
   }
   return out;
 }
+/* Break a telemetry line when consecutive samples are further apart than this
+   many seconds — an auto-pause or a recording dropout, not a real signal gap.
+   Connecting across it draws a misleading straight line (most visible in HR). */
+const TELEMETRY_GAP_S = 5;
+
 function drawTelemetryCharts(series, metrics) {
   const gps = series.gps || [], hr = series.hr || [], power = series.power || [];
   const refs = {};
@@ -1138,11 +1143,21 @@ function drawTelemetryCharts(series, metrics) {
     graphEmpty($("#ch-speed"), "No speed track", "This Ride does not contain a usable GPS speed signal.");
   }
   if (hr.length) {
+    const hrX = [];
+    const hrValues = [];
+    for (let i = 0; i < hr.length; i += 1) {
+      if (i > 0 && hr[i].t - hr[i - 1].t > TELEMETRY_GAP_S) {
+        hrX.push(null);
+        hrValues.push(null);
+      }
+      hrX.push((hr[i].t - t0) / 60);
+      hrValues.push(hr[i].hr);
+    }
     refs.hr = renderGraph("#ch-hr", {
       ariaLabel: "Heart rate across the ride",
-      x: { values: hr.map((point) => (point.t - t0) / 60), type: "linear", label: "minutes" },
+      x: { values: hrX, type: "linear", label: "minutes" },
       y: { label: "bpm", format: "bpm" },
-      series: [{ name: "Heart rate", values: hr.map((point) => point.hr), color: GRAPH.ink, width: 1.9, pointRadius: 1.8, points: false, format: "bpm" }],
+      series: [{ name: "Heart rate", values: hrValues, color: GRAPH.ink, width: 1.9, pointRadius: 1.8, points: false, format: "bpm" }],
     });
     refs.hr.xOf = (index) => gps[index] ? (gps[index].t - t0) / 60 : 0;
   } else graphEmpty($("#ch-hr"), "No heart-rate signal", "This Ride was recorded without HR data.");

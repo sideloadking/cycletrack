@@ -308,6 +308,42 @@ def test_calories():
           f"HR-based {expected_hr_kcal:.0f} kcal, female {female['kcal']} kcal")
 
 
+def test_pause_moving_time_and_coverage():
+    """Auto-pause gaps: duration comes from the device moving time, and HR
+    coverage divides by moving time rather than the wall-clock record span.
+
+    Regression: duration was the last-first record timestamp (pauses included),
+    so a paused ride showed elapsed time as "moving time" and HR coverage read
+    low against that same span.
+    """
+    from cycling import fit_parser
+
+    # Duration: records span 4200 s wall-clock but the device timer reports
+    # 3600 s of moving time (a 10-minute auto-pause).
+    records = [{"t": 0.0}, {"t": 4200.0}]
+    meta = {"total_timer": 3600.0, "total_distance": 20000.0}
+    fit_parser._finalize_meta(meta, records)
+    assert meta["duration_seconds"] == 3600.0, meta
+    # A missing/zero timer falls back to the record span.
+    no_timer = {"total_timer": 0.0, "total_distance": 20000.0}
+    fit_parser._finalize_meta(no_timer, records)
+    assert no_timer["duration_seconds"] == 4200.0, no_timer
+
+    # HR coverage: 1 h of 1 Hz HR with a 10-minute auto-pause gap.
+    moving, pause = 3600.0, 600.0
+    recs = make_steady_ride(seconds=3600, hr=150.0)
+    for r in recs:
+        if r["t"] >= 1800.0:
+            r["t"] += pause
+    cal = metrics_mod.estimate_calories(recs, {"weight_kg": 75.0, "age": 40, "sex": "male"},
+                                        duration=moving)
+    # HR covers every moving second (~1.0); the same signal over the 4200 s
+    # elapsed span would read ~0.86.
+    assert cal["hr_coverage"] >= 0.99, cal
+    print(f"pause moving time OK: duration {meta['duration_seconds']:.0f}s "
+          f"vs 4200s elapsed, HR coverage {cal['hr_coverage']:.2f}")
+
+
 def test_elevation_gain_shallow_climb():
     """Elevation gain must count a 2% climb. The old 1 m / 25 m threshold was
     a 4% grade cutoff, so every 1-4% climb contributed zero."""
@@ -477,6 +513,7 @@ if __name__ == "__main__":
     test_loop_calibration()
     test_cardiac_drift()
     test_calories()
+    test_pause_moving_time_and_coverage()
     test_elevation_gain_shallow_climb()
     test_trimp_sex()
     test_wind_direction_wrap()

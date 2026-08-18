@@ -546,7 +546,7 @@ def _hr_energy_kcal(records, rider):
     return kcal, covered
 
 
-def estimate_calories(records, rider):
+def estimate_calories(records, rider, duration=None):
     """Estimate gross energy expenditure (kcal) for a ride.
 
     Two independent methods, both reported:
@@ -559,12 +559,20 @@ def estimate_calories(records, rider):
       power model reports as ~0 W, so it is the headline whenever the signal
       covers at least half the ride.
 
+    ``duration`` is the ride's *moving* time in seconds. Pass it so HR
+    coverage and the HR-predicted power cross-check divide by moving time
+    (auto-pauses excluded) rather than the wall-clock span; when omitted the
+    record timestamp span is used as a fallback.
+
     Returns a dict (or None for an empty ride): kcal/lo/hi headline plus the
     cross-checks and a plain-language note.
     """
     if not records:
         return None
-    duration = max(records[-1]["t"] - records[0]["t"], 0.0)
+    if duration is None:
+        duration = max(records[-1]["t"] - records[0]["t"], 0.0)
+    else:
+        duration = float(duration)
 
     power_kcal = _integrate_work_kj(records, "watts_est") / KJ_PER_KCAL / GROSS_EFFICIENCY
     power_lo = _integrate_work_kj(records, "watts_lo") / KJ_PER_KCAL / GROSS_EFFICIENCY
@@ -635,7 +643,7 @@ def compute_ride_metrics(records, rider, bike, elev_summary, meta):
 
     has_hr = hr["avg_hr"] is not None
     drift = cardiac_drift(records, rider) if has_hr else None
-    calories = estimate_calories(records, rider)
+    calories = estimate_calories(records, rider, duration=duration)
     return {
         "distance_m": float(distance),
         "duration_s": float(duration),

@@ -346,9 +346,13 @@ def _finalize_meta(meta, records):
         if "start_time_unix" not in meta:
             meta["start_time_unix"] = records[0]["t"]
         meta["end_time_unix"] = records[-1]["t"]
-        # Duration from record timestamps is more reliable than the device
-        # timer when there are pauses.
-        meta["duration_seconds"] = max(0.0, records[-1]["t"] - records[0]["t"])
+        # The device's timer (total_timer) is the *moving* time — auto-pauses
+        # are excluded — so it is the ride's real duration. Record timestamps
+        # span wall-clock time (pauses included), so only fall back to that
+        # span when the device reports no timer (missing or zero).
+        elapsed = max(0.0, records[-1]["t"] - records[0]["t"])
+        moving = meta.get("total_timer")
+        meta["duration_seconds"] = float(moving) if (moving and moving > 0) else elapsed
         meta["point_count"] = len(records)
         if "total_distance" not in meta:
             meta["total_distance"] = records[-1].get("dist") or 0.0
