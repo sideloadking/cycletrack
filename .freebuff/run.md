@@ -1,25 +1,37 @@
-# Preview run doc
+# Cycling Progress Tracker — preview run doc
 
-Python/FastAPI app (no Node). The web UI (`web/`) is served by the FastAPI
-engine itself — there is no separate frontend build.
+## Reproduce the artifacts a fresh checkout needs
 
-## Reproduce artifacts
+No per-worktree env files or secrets are required. The app needs no API keys —
+it talks to public OpenStreetMap / Open-Meteo / EA LIDAR endpoints. Its data
+(SQLite DB + caches) lives outside the repo at `~/.cycling_tracker`
+(override with `CYCLING_DATA_ROOT`); it is created automatically on startup.
 
-- No env files, build steps, or generated assets needed.
-- Data root: `~/.cycling_tracker` (override with `CYCLING_DATA_ROOT` if you
-  want a scratch DB). `main.py` calls `storage.init_db()` and creates a
-  default profile on first run — idempotent.
-- Dependencies live in the repo venv: `.venv/Scripts/python.exe` (uvicorn,
-  fastapi, numpy, scipy, requests). Do NOT use the system Python — it lacks
-  uvicorn (the earlier preview failure in `.preview_server.log`).
+Dependencies are the only artifact to install, into the project venv:
+
+```sh
+python -m venv .venv
+.venv/Scripts/python.exe -m pip install -r requirements.txt
+```
+
+(`requirements.txt` is the single dependency manifest; the current venv
+already has them installed.)
 
 ## Run the server
 
-```bash
+The engine is a FastAPI app served by uvicorn on 127.0.0.1. Default port is
+**8347** (pass `--port` to change). Use `--no-browser` when serving for a
+preview.
+
+```sh
 .venv/Scripts/python.exe main.py --port 8347 --no-browser
 ```
 
-- Default port is 8347; `main.py` scans upward for a free one if busy.
-- `--no-browser` skips the auto-open so the preview can drive it.
-- Detached start (Windows): use `Start-Process` with the venv python.exe and
-  redirect stdout/stderr to different files.
+Detached on Windows (PowerShell; stdout and stderr must go to different
+files):
+
+```
+powershell -NoProfile -Command "(Start-Process -FilePath 'E:\cycling\.venv\Scripts\python.exe' -ArgumentList 'main.py','--port','8347','--no-browser' -WorkingDirectory 'E:\cycling' -RedirectStandardOutput '<log>' -RedirectStandardError '<log>.err' -WindowStyle Hidden -PassThru).Id"
+```
+
+UI is served at http://127.0.0.1:8347/.

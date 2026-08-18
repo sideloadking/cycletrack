@@ -233,9 +233,85 @@ def test_cardiac_drift():
         "unsteady power must not be reported as drift"
 
 
+def make_steady_ride(seconds=3600, watts=200.0, hr=150.0, include_hr=True):
+    """Synthetic 1 Hz ride at constant power (and optionally constant HR)."""
+    records = []
+    for i in range(seconds):
+        rec = {
+            "t": float(i), "lat": 52.0, "lon": -1.5, "elev": 100.0,
+            "grade": 0.0, "speed": 8.0, "dist": i * 8.0, "mode": "pedal",
+            "watts_est": watts, "watts_lo": watts * 0.8, "watts_hi": watts * 1.3,
+        }
+        if include_hr:
+            rec["hr"] = hr
+        records.append(rec)
+    return records
+
+
+def test_calories():
+    from cycling import metrics as metrics_mod
+
+    kj_per_kcal = metrics_mod.KJ_PER_KCAL
+    efficiency = metrics_mod.GROSS_EFFICIENCY
+    rider = {"weight_kg": 75.0, "age": 40, "sex": "male"}
+
+    # --- Work-based: 200 W for 1 h = 720 kJ of mechanical work. Food kcal
+    # --- comes from dividing by 4.184 kJ/kcal and gross efficiency.
+    rec = make_steady_ride(seconds=3600, watts=200.0, include_hr=False)
+    cal = metrics_mod.estimate_calories(rec, rider)
+    assert cal is not None and cal["method"] == "power", cal
+    expected_kcal = 200.0 * 3600 / 1000 / kj_per_kcal / efficiency
+    assert abs(cal["kcal"] - expected_kcal) < 1.0, (cal, expected_kcal)
+    # The uncertainty band follows the injected watts_lo/watts_hi.
+    assert abs(cal["power_lo"] - expected_kcal * 0.8) < 1.0
+    assert abs(cal["power_hi"] - expected_kcal * 1.3) < 1.0
+    assert cal["hr_kcal"] is None
+
+    # --- HR-based (Keytel male): 150 bpm for 1 h at 75 kg / 40 y.
+    rec = make_steady_ride(seconds=3600, watts=200.0, hr=150.0, include_hr=True)
+    cal = metrics_mod.estimate_calories(rec, rider)
+    assert cal["method"] == "hr", cal
+    kj_min = -55.0969 + 0.6309 * 150.0 + 0.1988 * 75.0 + 0.2017 * 40.0
+    expected_hr_kcal = kj_min * 60.0 / kj_per_kcal
+    assert abs(cal["kcal"] - expected_hr_kcal) < 2.0, (cal, expected_hr_kcal)
+    assert cal["hr_coverage"] == 1.0
+    assert cal["lo"] < cal["kcal"] < cal["hi"]
+    assert cal["power_kcal"] > 0  # cross-check always reported
+
+    # --- HR-derived average power cross-check (watts = kcal*4.184*0.239*1000/s).
+    hp = cal["hr_power"]
+    assert hp is not None, cal
+    watts_hr = expected_hr_kcal * metrics_mod.KJ_PER_KCAL \
+        * metrics_mod.GROSS_EFFICIENCY * 1000.0 / 3600.0
+    assert abs(hp["watts"] - watts_hr) < 1.0, (hp, watts_hr)
+    assert hp["lo"] < hp["watts"] < hp["hi"], hp
+    assert hp["lo"] > watts_hr * 0.7 and hp["hi"] < watts_hr * 1.25, hp
+
+    # --- Sex affects the estimate; unknown sex widens the band.
+    female = metrics_mod.estimate_calories(
+        make_steady_ride(seconds=3600, hr=150.0), {"weight_kg": 75.0, "age": 40, "sex": "female"})
+    unknown = metrics_mod.estimate_calories(
+        make_steady_ride(seconds=3600, hr=150.0), {"weight_kg": 75.0, "age": 40})
+    assert female["kcal"] < cal["kcal"], (female, cal)  # female eq is lower at same HR
+    assert unknown["method"] == "hr"
+    assert (unknown["hi"] - unknown["lo"]) > (cal["hi"] - cal["lo"])
+    # The unknown-sex HR-power band is wider than the known-sex one.
+    assert (unknown["hr_power"]["hi"] - unknown["hr_power"]["lo"]) \
+        > (cal["hr_power"]["hi"] - cal["hr_power"]["lo"])
+
+    # --- No records -> None; no HR -> no hr_power cross-check.
+    assert metrics_mod.estimate_calories([], rider) is None
+    no_hr = metrics_mod.estimate_calories(
+        make_steady_ride(seconds=3600, include_hr=False), rider)
+    assert no_hr["hr_power"] is None and no_hr["hr_kcal"] is None
+    print(f"calories OK: power-based {expected_kcal:.0f} kcal, "
+          f"HR-based {expected_hr_kcal:.0f} kcal, female {female['kcal']} kcal")
+
+
 if __name__ == "__main__":
     test_compressed_timestamp_fit()
     test_route_detection()
     test_loop_calibration()
     test_cardiac_drift()
+    test_calories()
     print("\nAll backend checks passed.")

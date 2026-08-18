@@ -34,15 +34,19 @@ def init_db():
 
 def _migrate(conn):
     """Additive schema migrations for databases created before a feature."""
-    cols = {r[1] for r in conn.execute("PRAGMA table_info(ride)")}
-    if "route_id" not in cols:
+    ride_cols = {r[1] for r in conn.execute("PRAGMA table_info(ride)")}
+    if "route_id" not in ride_cols:
         conn.execute("ALTER TABLE ride ADD COLUMN route_id INTEGER")
+    rider_cols = {r[1] for r in conn.execute("PRAGMA table_info(rider)")}
+    if "sex" not in rider_cols:
+        conn.execute("ALTER TABLE rider ADD COLUMN sex TEXT")
 
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS rider (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     age INTEGER, weight_kg REAL, height_cm REAL, bike_type TEXT,
+    sex TEXT,
     resting_hr INTEGER, max_hr INTEGER, hr_zones TEXT,
     updated_at REAL
 );
@@ -138,19 +142,20 @@ def save_profile(rider_data, bike_data):
             "weight_kg": float(rider_data.get("weight_kg", 75.0)),
             "height_cm": float(rider_data.get("height_cm", 178.0)),
             "bike_type": rider_data.get("bike_type", "road"),
+            "sex": rider_data.get("sex"),
             "resting_hr": int(rider_data.get("resting_hr", 55) or 55),
             "max_hr": rider_data.get("max_hr"),
             "hr_zones": json.dumps(rider_data.get("hr_zones")),
         }
         conn.execute(
             """INSERT INTO rider (id, age, weight_kg, height_cm, bike_type,
-               resting_hr, max_hr, hr_zones, updated_at)
-               VALUES (1, :age, :weight_kg, :height_cm, :bike_type,
+               sex, resting_hr, max_hr, hr_zones, updated_at)
+               VALUES (1, :age, :weight_kg, :height_cm, :bike_type, :sex,
                :resting_hr, :max_hr, :hr_zones, :updated_at)
                ON CONFLICT(id) DO UPDATE SET
                age=:age, weight_kg=:weight_kg, height_cm=:height_cm,
-               bike_type=:bike_type, resting_hr=:resting_hr, max_hr=:max_hr,
-               hr_zones=:hr_zones, updated_at=:updated_at""",
+               bike_type=:bike_type, sex=:sex, resting_hr=:resting_hr,
+               max_hr=:max_hr, hr_zones=:hr_zones, updated_at=:updated_at""",
             {**rider, "updated_at": _now()},
         )
         bike_id = bike_data.get("id") or 1
@@ -284,7 +289,7 @@ def list_rides():
         conn = _connect()
         rows = conn.execute(
             """SELECT id, filename, started_at, ended_at, distance_m, duration_s,
-               gain_m, avg_hr, trimp, avg_watts, watts_at_hr,
+               gain_m, avg_hr, trimp, avg_watts, watts_at_hr, metrics,
                elevation_source, has_hr, imported_at, route_id
                FROM ride ORDER BY started_at DESC"""
         ).fetchall()
@@ -397,6 +402,13 @@ def delete_ride(ride_id):
 def _summarize(row):
     d = dict(row)
     d["watts_at_hr"] = json.loads(d["watts_at_hr"] or "{}")
+    # Calories live inside the metrics JSON blob; surface the headline so the
+    # list rows can show them without shipping the whole blob.
+    try:
+        m = json.loads(d.pop("metrics", None) or "{}")
+        d["calories_kcal"] = (m.get("calories") or {}).get("kcal")
+    except Exception:
+        d["calories_kcal"] = None
     return d
 
 
@@ -563,7 +575,7 @@ def get_route(route_id):
         d["bbox"] = json.loads(d["bbox"] or "[]")
         rides = conn.execute(
             """SELECT id, filename, started_at, ended_at, distance_m, duration_s,
-               gain_m, avg_hr, trimp, avg_watts, watts_at_hr, has_hr
+               gain_m, avg_hr, trimp, avg_watts, watts_at_hr, metrics, has_hr
                FROM ride WHERE route_id = ? ORDER BY started_at""",
             (route_id,),
         ).fetchall()

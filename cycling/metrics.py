@@ -456,6 +456,161 @@ def _climb_metrics(records):
 
 
 # ---------------------------------------------------------------------------
+# Calorie expenditure
+# ---------------------------------------------------------------------------
+
+# One food kilocalorie = 4.184 kJ of work. The human body is only ~20-25%
+# efficient at turning food energy into pedal power; the widely used "1 kJ of
+# power-meter work ≈ 1 kcal burned" rule assumes ~23.9% gross efficiency
+# (Wahoo's convention, mid-range of the published 20-25% gross efficiency).
+KJ_PER_KCAL = 4.184
+GROSS_EFFICIENCY = 0.239
+
+# HR -> EE prediction error: Keytel et al. 2005 (Med. Sci. Sports Exerc.)
+# reports r^2 = 0.86 against indirect calorimetry, i.e. roughly +-15% on an
+# individual ride. Without a known sex the wrong equation is used, so the
+# band widens to cover the male/female spread.
+HR_EE_UNCERTAINTY = 0.15
+HR_EE_UNCERTAINTY_UNKNOWN_SEX = 0.22
+
+# Minimum fraction of ride time covered by a HR signal before the HR-based
+# estimate is trusted as the headline number.
+HR_ENERGY_MIN_COVERAGE = 0.5
+
+# Gross efficiency is not 23.9% for everyone; the published range for cycling
+# is roughly 20-25%. A HR-derived *power* cross-check converts metabolic
+# energy through that efficiency, so it carries this extra asymmetric
+# uncertainty on top of the HR -> EE equation error.
+HR_EFFICIENCY_LO = 0.20
+HR_EFFICIENCY_HI = 0.25
+
+# Keytel et al. 2005 prediction equations for energy expenditure during
+# submaximal exercise: EE (kJ/min) = a + b*HR + c*weight_kg + d*age.
+_KEYTEL = {
+    "male": (-55.0969, 0.6309, 0.1988, 0.2017),
+    "female": (-20.4022, 0.4472, -0.1263, 0.074),
+}
+
+
+def _integrate_work_kj(records, key="watts_est"):
+    """Trapezoid-integrate a per-point power series into kJ of mechanical work.
+
+    Gaps longer than 30 s are treated as pauses (stopped at a junction the
+    model reads ~0 W anyway; a mid-climb dropout must not invent a minute of
+    effort from the two bracketing samples).
+    """
+    ts = np.array([r["t"] for r in records], dtype=float)
+    w = np.array([r.get(key) or 0.0 for r in records], dtype=float)
+    if len(ts) < 2:
+        return 0.0
+    dt = np.maximum(np.minimum(np.diff(ts), 30.0), 0.0)
+    return float(np.sum(dt * 0.5 * (w[:-1] + w[1:]))) / 1000.0
+
+
+def _hr_energy_kcal(records, rider):
+    """Gross kcal from per-second HR, using the Keytel 2005 equations.
+
+    Returns (kcal, seconds_covered). HR is sampled at the current record and
+    applied to the interval since the previous record, exactly like TRIMP.
+    The equations already include the resting component of metabolism, so no
+    basal rate is added on top.
+    """
+    sex = str(rider.get("sex") or "").strip().lower()
+    a, b, c, d = _KEYTEL.get(sex, _KEYTEL["male"])
+    weight = float(rider.get("weight_kg", 75.0))
+    age = float(rider.get("age", 40))
+
+    kcal = 0.0
+    covered = 0.0
+    prev_t = None
+    for r in records:
+        t = r["t"]
+        if prev_t is not None:
+            dt = max(0.0, min(t - prev_t, 10.0))
+            hr = r.get("hr")
+            if hr is not None:
+                covered += dt
+                kj_min = a + b * hr + c * weight + d * age
+                kcal += max(0.0, kj_min) * dt / 60.0 / KJ_PER_KCAL
+        prev_t = t
+    return kcal, covered
+
+
+def estimate_calories(records, rider):
+    """Estimate gross energy expenditure (kcal) for a ride.
+
+    Two independent methods, both reported:
+
+    * ``power`` — mechanical work from the estimated power series, divided by
+      gross metabolic efficiency. Exactly the "kJ \u2248 kcal" rule, with the
+      band propagated from the power model's own watts_lo/watts_hi.
+    * ``hr`` — Keytel et al. 2005 equations applied per second of recorded
+      heart rate. HR sees the whole ride, including coasts and descents the
+      power model reports as ~0 W, so it is the headline whenever the signal
+      covers at least half the ride.
+
+    Returns a dict (or None for an empty ride): kcal/lo/hi headline plus the
+    cross-checks and a plain-language note.
+    """
+    if not records:
+        return None
+    duration = max(records[-1]["t"] - records[0]["t"], 0.0)
+
+    power_kcal = _integrate_work_kj(records, "watts_est") / KJ_PER_KCAL / GROSS_EFFICIENCY
+    power_lo = _integrate_work_kj(records, "watts_lo") / KJ_PER_KCAL / GROSS_EFFICIENCY
+    power_hi = _integrate_work_kj(records, "watts_hi") / KJ_PER_KCAL / GROSS_EFFICIENCY
+
+    hr_kcal, hr_covered = _hr_energy_kcal(records, rider)
+    coverage = hr_covered / duration if duration > 0 else 0.0
+    sex_known = bool(str(rider.get("sex") or "").strip())
+
+    if hr_kcal > 0 and coverage >= HR_ENERGY_MIN_COVERAGE:
+        frac = HR_EE_UNCERTAINTY if sex_known else HR_EE_UNCERTAINTY_UNKNOWN_SEX
+        kcal, lo, hi = hr_kcal, hr_kcal * (1.0 - frac), hr_kcal * (1.0 + frac)
+        method = "hr"
+        note = ("From heart rate (Keytel equations): this sees the whole ride, "
+                "including coasts and descents the power model reads as 0 W.")
+    else:
+        kcal, lo, hi = power_kcal, power_lo, power_hi
+        method = "power"
+        note = ("From estimated mechanical work at ~24% gross metabolic "
+                "efficiency (the kJ \u2248 kcal rule). No usable HR signal, so "
+                "coasting effort is not counted.")
+
+    # HR-derived average mechanical power cross-check: invert the calorie
+    # estimate through the same 4.184 kJ/kcal and gross efficiency. Only
+    # reported when the HR signal is trusted enough to headline the calories
+    # (same coverage rule), and only for the whole ride - HR has no
+    # second-by-second resolution, so this is an average, not a series.
+    hr_power = None
+    if hr_kcal > 0 and duration > 0 and coverage >= HR_ENERGY_MIN_COVERAGE:
+        watts_hr = hr_kcal * KJ_PER_KCAL * GROSS_EFFICIENCY * 1000.0 / duration
+        eff_lo_frac = (GROSS_EFFICIENCY - HR_EFFICIENCY_LO) / GROSS_EFFICIENCY
+        eff_hi_frac = (HR_EFFICIENCY_HI - GROSS_EFFICIENCY) / GROSS_EFFICIENCY
+        lo_frac = math.hypot(frac, eff_lo_frac)
+        hi_frac = math.hypot(frac, eff_hi_frac)
+        hr_power = {
+            "watts": round(watts_hr),
+            "lo": round(watts_hr * (1.0 - lo_frac)),
+            "hi": round(watts_hr * (1.0 + hi_frac)),
+        }
+
+    return {
+        "kcal": round(kcal),
+        "lo": round(max(0.0, lo)),
+        "hi": round(max(0.0, hi)),
+        "method": method,
+        "hr_kcal": round(hr_kcal) if hr_kcal > 0 else None,
+        "hr_coverage": round(coverage, 2),
+        "hr_power": hr_power,
+        "power_kcal": round(power_kcal),
+        "power_lo": round(max(0.0, power_lo)),
+        "power_hi": round(max(0.0, power_hi)),
+        "note": note,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
@@ -470,6 +625,7 @@ def compute_ride_metrics(records, rider, bike, elev_summary, meta):
 
     has_hr = hr["avg_hr"] is not None
     drift = cardiac_drift(records, rider) if has_hr else None
+    calories = estimate_calories(records, rider)
     return {
         "distance_m": float(distance),
         "duration_s": float(duration),
@@ -500,6 +656,7 @@ def compute_ride_metrics(records, rider, bike, elev_summary, meta):
         "pedalling_ratio": power["pedalling_ratio"],
         "avg_grade": float(np.mean([r.get("grade") or 0.0 for r in records])) if records else 0.0,
         "cardiac_drift": drift,
+        "calories": calories,
     }
 
 

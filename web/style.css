@@ -464,8 +464,8 @@ svg { display: block; }
   .graph-legend-item { font-size: 11px; }
 }
 .leaflet-container { color: var(--ink); background: var(--canvas); font-family: var(--font-body); }
-/* CARTO light tiles are already soft; keep them defined instead of washed out. */
-.leaflet-tile { filter: saturate(.86) brightness(1.02) contrast(1.05); }
+/* Tiles render at full fidelity — no color filters. The Voyager basemap
+   already carries the road and label detail this view needs. */
 .leaflet-control-attribution { color: var(--muted) !important; background: rgba(255,255,255,.86) !important; font: 500 11px/15px var(--font-data) !important; }
 .leaflet-control-attribution a { color: var(--green) !important; }
 .leaflet-bar { border: 1px solid var(--line-strong) !important; }

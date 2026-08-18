@@ -89,6 +89,7 @@ DEFAULT_RIDER = {
     "weight_kg": 75.0,
     "height_cm": 178.0,
     "bike_type": "road",
+    "sex": None,  # male/female feed the Keytel calorie equations
     "resting_hr": 55,
     "max_hr": None,  # computed from age if unset
     "hr_zones": None,  # computed from max_hr if unset
