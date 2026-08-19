@@ -1064,16 +1064,16 @@ function metricMarkup(label, value, unit = "", options = {}) {
 
 async function renderRideDetail(id, token = startPage()) {
   view.innerHTML = `<div class="skeleton skeleton--card"></div><div class="skeleton skeleton--chart mt-24"></div><div class="skeleton skeleton--chart mt-24"></div>`;
-  let ride, series;
-  try { [ride, series] = await Promise.all([api(`/api/rides/${id}`), api(`/api/rides/${id}/series?downsample=1800`)]); } catch (error) { if (pageIsCurrent(token)) view.innerHTML = errorState("Ride not found", "It may have been deleted, or the link is out of date."); return; }
+  let ride, series, descents;
+  try { [ride, series, descents] = await Promise.all([api(`/api/rides/${id}`), api(`/api/rides/${id}/series?downsample=1800`), api(`/api/rides/${id}/descents`)]); } catch (error) { if (pageIsCurrent(token)) view.innerHTML = errorState("Ride not found", "It may have been deleted, or the link is out of date."); return; }
   if (!pageIsCurrent(token)) return;
   const metrics = ride.metrics || {};
   const route = ride.route;
   const title = rideTitle(ride, route);
-  view.innerHTML = `<div class="detail-top"><a class="detail-back" href="#/rides">${icon("chevron-right")}Back to rides</a><span class="detail-file">${esc(ride.filename || "FIT ride")}</span>${route ? `<a class="pill ${route.size > 1 ? "pill--green" : "pill--muted"}" href="#/route/${route.id}">${esc(route.name)} · ${route.position}/${route.size}</a>` : ""}<div class="detail-actions"><button class="button button--danger button--small" id="delete-ride">${icon("trash")}Delete ride</button></div></div><section class="detail-hero"><div class="detail-hero__title"><h1>${esc(title)}</h1><p>${esc(fmtDateTime(ride.started_at))} · ${esc(elevationLabel(ride.elevation_source))}</p><div class="mt-24"><span class="pill ${ride.bike_calibrated ? "pill--green" : "pill--orange"}">${ride.bike_calibrated ? "calibrated bike" : "estimated power"}</span></div></div><div class="detail-hero__stats">${metricMarkup("Distance", fmtDistance(metrics.distance_m))}${metricMarkup("Moving time", fmtDuration(metrics.duration_s))}${metricMarkup("Climbing", fmtMeters(metrics.elevation_gain_m))}${metricMarkup("Avg heart rate", metrics.avg_hr ? `${Math.round(metrics.avg_hr)} bpm` : "—")}${metricMarkup("Average power", metrics.avg_watts != null ? Math.round(metrics.avg_watts) : "—", "W", { tag: "estimated", band: { lo: metrics.avg_watts_lo, est: metrics.avg_watts, hi: metrics.avg_watts_hi } })}${metrics.calories?.hr_power?.watts ? metricMarkup("HR-predicted power", Math.round(metrics.calories.hr_power.watts), "W", { tag: "heart rate", tagClass: "tag--green", band: { lo: metrics.calories.hr_power.lo, est: metrics.calories.hr_power.watts, hi: metrics.calories.hr_power.hi }, title: "Whole-ride average power implied by your heart rate (Keytel energy equations \u00f7 ~24% efficiency). It includes descents the physics model reads as 0 W, so expect it above Average power — a cross-check, not a replacement." }) : ""}${metricMarkup("Normalized power", metrics.normalized_power != null ? Math.round(metrics.normalized_power) : "—", "W", { tag: "estimated", band: { lo: metrics.normalized_power_lo, est: metrics.normalized_power, hi: metrics.normalized_power_hi }, title: "Average power adjusted for how hard the effort swings." })}${metricMarkup("VO2max", metrics.vo2max != null ? Number(metrics.vo2max).toFixed(1) : "—", "ml/kg/min", { tag: "context", tagClass: "tag--blue", title: "Estimated aerobic capacity — how much oxygen your body can use per kilo per minute." })}${metricMarkup("TRIMP load", metrics.trimp ? Math.round(metrics.trimp) : "—", "", { title: "Training load — heart-rate effort multiplied by time." })}${metrics.calories && metrics.calories.kcal > 0 ? metricMarkup("Calories", Math.round(metrics.calories.kcal), "kcal", { tag: metrics.calories.method === "hr" ? "heart rate" : "power est.", tagClass: metrics.calories.method === "hr" ? "tag--green" : "tag--orange", band: { lo: metrics.calories.lo, est: metrics.calories.kcal, hi: metrics.calories.hi }, bandFormat: fmtKcal, title: metrics.calories.note }) : ""}</div></section><section class="card telemetry-card"><div class="telemetry-head"><div><h2>Ride replay</h2></div><div class="telemetry-tools"><button class="button button--primary button--small" id="replay-play">${icon("play")}<span>Play replay</span></button></div></div><div class="map-wrap"><div id="ride-map" class="ride-map"></div></div><div class="scrubber"><div class="scrubber__line"><input id="scrub-slider" type="range" min="0" max="0" value="0" aria-label="Scrub through ride"><span id="scrub-time" class="scrubber__time">0:00</span></div><div id="scrub-readout" class="readout"></div></div></section><section class="telemetry-graphs"><article class="card telemetry-graph"><div class="card-title"><div><h2>Elevation &amp; grade</h2></div></div><div id="ch-elev" class="chart chart--small"></div></article><article class="card telemetry-graph"><div class="card-title"><div><h2>Heart rate</h2></div></div><div id="ch-hr" class="chart chart--small"></div></article><article class="card telemetry-graph"><div class="card-title"><div><h2>Power estimate</h2></div></div><div id="ch-power" class="chart chart--small"></div></article><article class="card telemetry-graph"><div class="card-title"><div><h2>Speed</h2></div></div><div id="ch-speed" class="chart chart--small"></div></article></section><article class="card telemetry-graph mt-20"><div class="card-title"><div><h2>Gradient distribution</h2></div></div><div id="ch-grade" class="chart chart--small"></div></article><article id="drift-card" class="card drift-card"></article>`;
+  view.innerHTML = `<div class="detail-top"><a class="detail-back" href="#/rides">${icon("chevron-right")}Back to rides</a><span class="detail-file">${esc(ride.filename || "FIT ride")}</span>${route ? `<a class="pill ${route.size > 1 ? "pill--green" : "pill--muted"}" href="#/route/${route.id}">${esc(route.name)} · ${route.position}/${route.size}</a>` : ""}<div class="detail-actions"><button class="button button--danger button--small" id="delete-ride">${icon("trash")}Delete ride</button></div></div><section class="detail-hero"><div class="detail-hero__title"><h1>${esc(title)}</h1><p>${esc(fmtDateTime(ride.started_at))} · ${esc(elevationLabel(ride.elevation_source))}</p><div class="mt-24"><span class="pill ${ride.bike_calibrated ? "pill--green" : "pill--orange"}">${ride.bike_calibrated ? "calibrated bike" : "estimated power"}</span></div></div><div class="detail-hero__stats">${metricMarkup("Distance", fmtDistance(metrics.distance_m))}${metricMarkup("Moving time", fmtDuration(metrics.duration_s))}${metricMarkup("Climbing", fmtMeters(metrics.elevation_gain_m))}${metricMarkup("Avg heart rate", metrics.avg_hr ? `${Math.round(metrics.avg_hr)} bpm` : "—")}${metricMarkup("Average power", metrics.avg_watts != null ? Math.round(metrics.avg_watts) : "—", "W", { tag: "estimated", band: { lo: metrics.avg_watts_lo, est: metrics.avg_watts, hi: metrics.avg_watts_hi } })}${metrics.calories?.hr_power?.watts ? metricMarkup("HR-predicted power", Math.round(metrics.calories.hr_power.watts), "W", { tag: "heart rate", tagClass: "tag--green", band: { lo: metrics.calories.hr_power.lo, est: metrics.calories.hr_power.watts, hi: metrics.calories.hr_power.hi }, title: "Whole-ride average power implied by your heart rate (Keytel energy equations \u00f7 ~24% efficiency). It includes descents the physics model reads as 0 W, so expect it above Average power — a cross-check, not a replacement." }) : ""}${metricMarkup("Normalized power", metrics.normalized_power != null ? Math.round(metrics.normalized_power) : "—", "W", { tag: "estimated", band: { lo: metrics.normalized_power_lo, est: metrics.normalized_power, hi: metrics.normalized_power_hi }, title: "Average power adjusted for how hard the effort swings." })}${metricMarkup("VO2max", metrics.vo2max != null ? Number(metrics.vo2max).toFixed(1) : "—", "ml/kg/min", { tag: "context", tagClass: "tag--blue", title: "Estimated aerobic capacity — how much oxygen your body can use per kilo per minute." })}${metricMarkup("TRIMP load", metrics.trimp ? Math.round(metrics.trimp) : "—", "", { title: "Training load — heart-rate effort multiplied by time." })}${metrics.calories && metrics.calories.kcal > 0 ? metricMarkup("Calories", Math.round(metrics.calories.kcal), "kcal", { tag: metrics.calories.method === "hr" ? "heart rate" : "power est.", tagClass: metrics.calories.method === "hr" ? "tag--green" : "tag--orange", band: { lo: metrics.calories.lo, est: metrics.calories.kcal, hi: metrics.calories.hi }, bandFormat: fmtKcal, title: metrics.calories.note }) : ""}</div></section><section class="card telemetry-card"><div class="telemetry-head"><div><h2>Ride replay</h2></div><div class="telemetry-tools"><button class="button button--primary button--small" id="replay-play">${icon("play")}<span>Play replay</span></button></div></div><div class="map-wrap"><div id="ride-map" class="ride-map"></div></div><div class="scrubber"><div class="scrubber__line"><input id="scrub-slider" type="range" min="0" max="0" value="0" aria-label="Scrub through ride"><span id="scrub-time" class="scrubber__time">0:00</span></div><div id="scrub-readout" class="readout"></div></div><div class="descents"><div class="descents__title"><h3>Descents</h3><p>Freewheeled, pedalled or braked? Your tag is what the loop calibration trusts over heart rate — a “Pedalled” tag also keeps that descent in your power estimate (user-tagged, not a sensor reading).</p></div><div id="descents-list" class="list-stack"></div></div></section><section class="telemetry-graphs"><article class="card telemetry-graph"><div class="card-title"><div><h2>Elevation &amp; grade</h2></div></div><div id="ch-elev" class="chart chart--small"></div></article><article class="card telemetry-graph"><div class="card-title"><div><h2>Heart rate</h2></div></div><div id="ch-hr" class="chart chart--small"></div></article><article class="card telemetry-graph"><div class="card-title"><div><h2>Power estimate</h2></div></div><div id="ch-power" class="chart chart--small"></div></article><article class="card telemetry-graph"><div class="card-title"><div><h2>Speed</h2></div></div><div id="ch-speed" class="chart chart--small"></div></article></section><article class="card telemetry-graph mt-20"><div class="card-title"><div><h2>Gradient distribution</h2></div></div><div id="ch-grade" class="chart chart--small"></div></article><article id="drift-card" class="card drift-card"></article>`;
   $("#delete-ride").addEventListener("click", async () => { if (!confirm("Delete this ride from the local database?")) return; try { await api(`/api/rides/${id}`, { method: "DELETE" }); toast("Ride deleted."); location.hash = "#/rides"; } catch (error) { toast(error.message); } });
   const chartRefs = drawTelemetryCharts(series, metrics);
-  setupReplay(series, chartRefs);
+  setupReplay(series, chartRefs, descents.descents || [], id);
   renderDriftCard(metrics.cardiac_drift, metrics.has_hr);
 }
 
@@ -1192,7 +1192,86 @@ function drawTelemetryCharts(series, metrics) {
   return refs;
 }
 
-function setupReplay(series, chartRefs) {
+function descentLabelText(descent) {
+  return descent.label === "coast" ? "Freewheeled" : descent.label === "pedal" ? "Pedalled" : descent.label === "brake" ? "Braked" : "To review";
+}
+function descentColor(label) {
+  return label === "coast" ? GRAPH.green : label === "pedal" ? GRAPH.orange : label === "brake" ? GRAPH.ink : GRAPH.muted;
+}
+function drawDescentHighlights(map, gps, descents) {
+  if (!map || !window.L) return null;
+  const group = window.L.layerGroup().addTo(map);
+  descents.forEach((descent) => {
+    const latlngs = [];
+    gps.forEach((point) => { if (point.t >= descent.t_start && point.t <= descent.t_end && point.lat != null && point.lon != null) latlngs.push([point.lat, point.lon]); });
+    if (latlngs.length > 1) {
+      window.L.polyline(latlngs, { color: "#fff", weight: 8, opacity: .85, lineCap: "round" }).addTo(group);
+      window.L.polyline(latlngs, { color: descentColor(descent.label), weight: 4, opacity: .95, lineCap: "round" }).addTo(group);
+    }
+  });
+  return group;
+}
+function setupDescentTags(rideId, descents, gps, map, seek) {
+  const listEl = $("#descents-list");
+  if (!listEl) return;
+  const t0 = gps[0]?.t || 0;
+  let highlight = null;
+
+  async function refresh() {
+    try {
+      const fresh = await api(`/api/rides/${rideId}/descents`);
+      descents = fresh.descents || [];
+      redraw();
+    } catch (error) { toast(error.message); }
+  }
+
+  function redraw() {
+    if (highlight) { highlight.remove(); highlight = null; }
+    highlight = drawDescentHighlights(map, gps, descents);
+    renderList();
+  }
+
+  function renderList() {
+    if (!descents.length) {
+      listEl.innerHTML = emptyState("No descents detected", "This ride has no runs below −1% grade, so the loop calibration has nothing to trust yet.");
+      return;
+    }
+    listEl.innerHTML = descents.map((descent, index) => {
+      const rel = (t) => fmtDuration(Math.max(0, t - t0));
+      const meta = descent.source === "manual" ? "your tag" : descent.score != null ? `auto · ${Math.round(descent.score * 100)}% coast` : "auto";
+      return `<div class="list-row"><div class="list-row__main descents__seek" data-index="${index}" role="button" tabindex="0"><strong>${esc(descentLabelText(descent))}</strong><small>${esc(rel(descent.t_start))} – ${esc(rel(descent.t_end))} · ${esc(meta)}</small></div><div class="segmented descents__tags" role="group" aria-label="Tag this descent"><button data-tag="coast" class="${descent.label === "coast" ? "active" : ""}">Freewheeled</button><button data-tag="pedal" class="${descent.label === "pedal" ? "active" : ""}">Pedalled</button><button data-tag="brake" class="${descent.label === "brake" ? "active" : ""}">Braked</button><button data-tag="clear" class="${descent.source === "auto" ? "active" : ""}">Auto</button></div></div>`;
+    }).join("");
+
+    $$(".descents__seek", listEl).forEach((node) => {
+      const descent = descents[+node.dataset.index];
+      const activate = () => {
+        let nearest = 0;
+        gps.forEach((point, i) => { if (Math.abs(point.t - descent.t_start) < Math.abs(gps[nearest].t - descent.t_start)) nearest = i; });
+        seek(nearest);
+      };
+      node.addEventListener("click", activate);
+      node.addEventListener("keydown", (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); activate(); } });
+    });
+
+    $$(".descents__tags", listEl).forEach((group) => {
+      const descent = descents[+group.closest(".list-row").querySelector(".descents__seek").dataset.index];
+      $$("button", group).forEach((button) => button.addEventListener("click", async () => {
+        const label = button.dataset.tag === "clear" ? null : button.dataset.tag;
+        button.disabled = true;
+        try {
+          await api(`/api/rides/${rideId}/coast_segments`, { method: "POST", body: { t_start: descent.t_start, t_end: descent.t_end, label } });
+          toast(label ? `${descentLabelText({ label })} tag saved.` : "Tag cleared — back to auto.");
+          await refresh();
+        } catch (error) { toast(error.message); }
+        button.disabled = false;
+      }));
+    });
+  }
+
+  redraw();
+}
+
+function setupReplay(series, chartRefs, descents = [], rideId = null) {
   const gps = series.gps || [], hr = series.hr || [], power = series.power || [];
   const slider = $("#scrub-slider"), readout = $("#scrub-readout"), timeLabel = $("#scrub-time"), playButton = $("#replay-play");
   if (!slider || gps.length < 2) { if (slider) slider.disabled = true; return; }
@@ -1249,6 +1328,8 @@ function setupReplay(series, chartRefs) {
     state.replayIndex = current;
   }
 
+  setupDescentTags(rideId, descents, gps, state.map, seek);
+
   slider.max = gps.length - 1;
   slider.addEventListener("input", () => seek(+slider.value));
   ["elev", "power", "speed", "hr"].forEach((key) => { const ref = chartRefs[key]; if (!ref?.el) return; bindGraphSeek(ref, (value) => { if (key === "hr") { const target = t0 + Number(value) * 60; let nearest = 0; gps.forEach((point, index) => { if (Math.abs(point.t - target) < Math.abs(gps[nearest].t - target)) nearest = index; }); seek(nearest); } else { let nearest = 0; distances.forEach((distance, index) => { if (Math.abs(distance - Number(value)) < Math.abs(distances[nearest] - Number(value))) nearest = index; }); seek(nearest); } }); });
@@ -1272,7 +1353,7 @@ async function renderProfile(_, token = startPage()) {
   try { [profile, calibrations] = await Promise.all([api("/api/profile"), api("/api/calibrations")]); } catch (error) { if (pageIsCurrent(token)) view.innerHTML = errorState("Profile could not load", error.message); return; }
   if (!pageIsCurrent(token)) return;
   const rider = profile.rider || {}, bike = profile.bike || {}, zones = rider.hr_zones || [];
-  view.innerHTML = `    <div class="page-head"><div class="page-head__copy"><h1>Profile</h1></div></div><section class="form-layout"><article class="card form-card"><div class="form-section"><h3>Rider</h3><p>Used for heart-rate zones, load, and the total mass in the power model.</p><div class="form-grid"><label class="form-field">Age<input id="r-age" type="number" value="${esc(rider.age || 40)}"></label><label class="form-field">Weight <input id="r-weight" type="number" step=".5" value="${esc(rider.weight_kg || 75)}"></label><label class="form-field">Height <input id="r-height" type="number" step=".5" value="${esc(rider.height_cm || 178)}"></label><label class="form-field">Resting HR<input id="r-rest" type="number" value="${esc(rider.resting_hr || 55)}"></label><label class="form-field">Max HR<input id="r-maxhr" type="number" value="${esc(rider.max_hr || 180)}"></label><label class="form-field">Bike type<select id="r-bike">${["road", "gravel", "mountain", "hybrid", "tt"].map((type) => `<option value="${type}" ${rider.bike_type === type ? "selected" : ""}>${type}</option>`).join("")}</select></label><label class="form-field">Sex<select id="r-sex"><option value="" ${rider.sex ? "" : "selected"}>Not set</option><option value="male" ${rider.sex === "male" ? "selected" : ""}>Male</option><option value="female" ${rider.sex === "female" ? "selected" : ""}>Female</option></select><small style="text-transform:none;letter-spacing:0;font-weight:400">Drives the heart-rate calorie estimate and TRIMP load.</small></label></div></div><div class="form-section"><h3>Heart-rate zones</h3><p>Edit the boundaries if you know your own zones. They drive TRIMP and fitness/freshness.</p><div class="zone-grid">${[0,1,2,3,4].map((index) => { const zone = zones[index] || { lo: 0, hi: 0 }; const prevHi = index === 0 ? null : (zones[index - 1] || { hi: 0 }).hi; return `<div class="zone"><strong>Z${index + 1}</strong>${index === 0 ? `<input id="z0-lo" type="number" min="30" max="250" value="${esc(zone.lo)}" aria-label="Zone 1 lower">` : `<span class="zone__inherit" aria-hidden="true">${esc(prevHi)}</span>`}<span class="zone__dash" aria-hidden="true">to</span><input id="z${index}-hi" type="number" min="30" max="250" value="${esc(zone.hi)}" aria-label="Zone ${index + 1} upper${index === 0 ? "" : ` (from ${esc(prevHi)})`}"></div>`; }).join("")}</div></div></article><article class="card form-card"><div class="form-section"><h3>Bike</h3><p>The bike profile is the other half of the physics model.</p><div class="form-grid form-grid--two"><label class="form-field">Name<input id="b-name" type="text" value="${esc(bike.name || "Road bike")}"></label><label class="form-field">Mass <input id="b-mass" type="number" step=".1" value="${esc(bike.mass_kg || 9)}"></label><label class="form-field">Rolling resistance<input id="b-crr" type="number" step=".0001" value="${esc(bike.crr || .005)}" title="Crr — how much the tyres resist rolling. Lower is faster on flats."></label><label class="form-field">Drag area CdA<input id="b-cda" type="number" step=".01" value="${esc(bike.cdA || .35)}" title="CdA = drag coefficient × frontal area. Lower means more aero."></label><label class="form-field">Drivetrain efficiency<input id="b-eff" type="number" step=".01" value="${esc(bike.drivetrain_efficiency || .97)}"></label></div></div><div class="form-section"><div class="calibration-note"><strong>${bike.calibrated ? "Bike calibration is active" : "Default assumptions are active"}</strong>${bike.calibrated ? "Your recent calibration tightens the uncertainty band where the physics supports it." : "A closed loop with coasting descents can fit Crr and CdA from your own riding."}</div><div class="save-row"><span class="subtle mono">Changes recalculate stored rides.</span><button class="button button--primary" id="save-profile">Save changes</button></div></div></article></section><section class="card card-pad mt-20"><div class="card-title"><div><h2>Calibration history</h2></div></div><div id="calibration-list"></div></section>`;
+  view.innerHTML = `    <div class="page-head"><div class="page-head__copy"><h1>Profile</h1></div></div><section class="form-layout"><article class="card form-card"><div class="form-section"><h3>Rider</h3><p>Used for heart-rate zones, load, and the total mass in the power model.</p><div class="form-grid"><label class="form-field">Age<input id="r-age" type="number" value="${esc(rider.age || 40)}"></label><label class="form-field">Weight <input id="r-weight" type="number" step=".5" value="${esc(rider.weight_kg || 75)}"></label><label class="form-field">Height <input id="r-height" type="number" step=".5" value="${esc(rider.height_cm || 178)}"></label><label class="form-field">Resting HR<input id="r-rest" type="number" value="${esc(rider.resting_hr || 55)}"></label><label class="form-field">Max HR<input id="r-maxhr" type="number" value="${esc(rider.max_hr || 180)}"></label><label class="form-field">Bike type<select id="r-bike">${["road", "gravel", "mountain", "hybrid", "tt"].map((type) => `<option value="${type}" ${rider.bike_type === type ? "selected" : ""}>${type}</option>`).join("")}</select></label><label class="form-field">Sex<select id="r-sex"><option value="" ${rider.sex ? "" : "selected"}>Not set</option><option value="male" ${rider.sex === "male" ? "selected" : ""}>Male</option><option value="female" ${rider.sex === "female" ? "selected" : ""}>Female</option></select><small style="text-transform:none;letter-spacing:0;font-weight:400">Drives the heart-rate calorie estimate and TRIMP load.</small></label></div></div><div class="form-section"><h3>Heart-rate zones</h3><p>Edit the boundaries if you know your own zones. They drive TRIMP and fitness/freshness.</p><div class="zone-grid">${[0,1,2,3,4].map((index) => { const zone = zones[index] || { lo: 0, hi: 0 }; const prevHi = index === 0 ? null : (zones[index - 1] || { hi: 0 }).hi; return `<div class="zone"><strong>Z${index + 1}</strong>${index === 0 ? `<input id="z0-lo" type="number" min="30" max="250" value="${esc(zone.lo)}" aria-label="Zone 1 lower">` : `<span class="zone__inherit" aria-hidden="true">${esc(prevHi)}</span>`}<span class="zone__dash" aria-hidden="true">to</span><input id="z${index}-hi" type="number" min="30" max="250" value="${esc(zone.hi)}" aria-label="Zone ${index + 1} upper${index === 0 ? "" : ` (from ${esc(prevHi)})`}"></div>`; }).join("")}</div></div></article><article class="card form-card"><div class="form-section"><h3>Bike</h3><p>The bike profile is the other half of the physics model.</p><div class="form-grid form-grid--two"><label class="form-field">Name<input id="b-name" type="text" value="${esc(bike.name || "Road bike")}"></label><label class="form-field">Mass <input id="b-mass" type="number" step=".1" value="${esc(bike.mass_kg || 9)}"></label><label class="form-field">Rolling resistance<input id="b-crr" type="number" step=".0001" value="${esc(bike.crr || .005)}" title="Crr — how much the tyres resist rolling. Lower is faster on flats."></label><label class="form-field">Drag area CdA<input id="b-cda" type="number" step=".01" value="${esc(bike.cdA || .35)}" title="CdA = drag coefficient × frontal area. Lower means more aero."></label><label class="form-field">Drivetrain efficiency<input id="b-eff" type="number" step=".01" value="${esc(bike.drivetrain_efficiency || .97)}"></label></div></div><div class="form-section"><div class="calibration-note"><strong>${bike.calibrated ? "Bike calibration is active" : "Default assumptions are active"}</strong>${bike.calibrated ? "Your recent calibration tightens the uncertainty band where the physics supports it." : "A closed loop with coasting descents can fit Crr and CdA from your own riding."}</div><div class="save-row"><span class="subtle mono">Changes recalculate stored rides.</span><button class="button button--primary" id="save-profile">Save changes</button></div></div></article></section><section class="card card-pad mt-20"><div class="card-title"><div><h2>Calibration history</h2></div><button class="button button--primary button--small" id="run-pooled">Run pooled calibration</button></div><div id="calibration-list"></div></section>`;
   const fieldIds = ["r-age", "r-weight", "r-height", "r-rest", "r-maxhr", "b-mass", "b-crr", "b-cda", "b-eff", "z0-lo", ...[0,1,2,3,4].map((index) => `z${index}-hi`)];
   fieldIds.forEach((id) => $(`#${id}`)?.addEventListener("input", () => $(`#${id}`).classList.remove("invalid")));
   $("#save-profile").addEventListener("click", async () => {
@@ -1295,9 +1376,65 @@ async function renderProfile(_, token = startPage()) {
     try { await api("/api/profile", { method: "PUT", body: { rider: { age: num("r-age"), weight_kg: num("r-weight"), height_cm: num("r-height"), resting_hr: num("r-rest"), max_hr: num("r-maxhr"), bike_type: $("#r-bike").value, sex: $("#r-sex").value || null, hr_zones: hrZones }, bike: { id: bike.id, name: $("#b-name").value, mass_kg: num("b-mass"), crr: num("b-crr"), cdA: num("b-cda"), drivetrain_efficiency: num("b-eff"), calibrated: bike.calibrated } } }); toast("Profile saved and rides recalculated."); } catch (error) { toast(error.message); }
     saveButton.disabled = false; saveButton.textContent = saveLabel;
   });
-  const calibrationList = $("#calibration-list");
-  if (!calibrations.length) calibrationList.innerHTML = emptyState("No calibration yet", "Ride a closed loop with coasting descents and the engine will fit Crr and CdA here. Climbs are recorded for visibility only.");
-  else calibrationList.innerHTML = `<div class="table-scroll"><table class="ride-table"><thead><tr><th>Ride</th><th>Type</th><th title="Rolling-resistance coefficient">Crr</th><th title="Drag area — coefficient of drag × frontal area">CdA</th><th title="Fit quality of the calibration">R²</th><th>Segments</th></tr></thead><tbody>${calibrations.map((calibration) => `<tr><td>${esc(calibration.filename || calibration.ride_id)}</td><td>${confidenceTag(calibration.type === "loop" ? "high" : "context", calibration.type === "loop" ? "loop" : "climb · diagnostic")}</td><td class="mono">${calibration.params?.crr ? Number(calibration.params.crr).toFixed(4) : "—"}</td><td class="mono">${calibration.params?.cdA ? Number(calibration.params.cdA).toFixed(2) : "—"}</td><td class="mono">${calibration.r2 != null ? Number(calibration.r2).toFixed(2) : "—"}</td><td class="mono">${calibration.params?.n_segments || "—"}</td></tr>`).join("")}</tbody></table></div>`;
+  renderCalibrationList(calibrations);
+  $("#run-pooled")?.addEventListener("click", async () => {
+    const button = $("#run-pooled");
+    const label = button.textContent;
+    button.disabled = true; button.textContent = "Fitting…";
+    try {
+      const result = await api("/api/calibrate/pooled", { method: "POST", body: {} });
+      const c = result.calibration || {};
+      toast(`Pooled calibration applied — ${c.n_rides} rides, ${c.n_segments} segments.`);
+      const [calibrations] = await Promise.all([api("/api/calibrations"), refreshBikeFields(bike)]);
+      renderCalibrationList(calibrations);
+    } catch (error) {
+      toast(error.message);
+    }
+    button.disabled = false; button.textContent = label;
+  });
+}
+
+async function refreshBikeFields(bikeRef) {
+  /* After a pooled calibration the bike's Crr/CdA and calibrated flag change
+     server-side; keep the Bike form, status note, and the in-memory bike
+     object (used by the save handler) in step without losing unsaved edits in
+     the other fields. */
+  try {
+    const { bike } = await api("/api/profile");
+    const crr = $("#b-crr"), cda = $("#b-cda");
+    if (crr) crr.value = bike.crr;
+    if (cda) cda.value = bike.cdA;
+    if (bikeRef) {
+      bikeRef.crr = bike.crr;
+      bikeRef.cdA = bike.cdA;
+      bikeRef.calibrated = bike.calibrated;
+    }
+    const note = document.querySelector(".calibration-note");
+    if (note) {
+      note.innerHTML = `<strong>${bike.calibrated ? "Bike calibration is active" : "Default assumptions are active"}</strong>${bike.calibrated ? "Your recent calibration tightens the uncertainty band where the physics supports it." : "A closed loop with coasting descents can fit Crr and CdA from your own riding."}`;
+    }
+  } catch (_) { /* non-fatal: the form is still correct on next page load */ }
+}
+
+function renderCalibrationList(calibrations) {
+  const list = $("#calibration-list");
+  if (!list) return;
+  if (!calibrations.length) {
+    list.innerHTML = emptyState("No calibration yet", "Ride a closed loop with coasting descents and the engine will fit Crr and CdA here. Climbs are recorded for visibility only.");
+    return;
+  }
+  const typeMeta = (type) => type === "loop" ? ["high", "loop"]
+    : type === "pooled" ? ["high", "pooled"] : ["context", "climb · diagnostic"];
+  list.innerHTML = `<div class="table-scroll"><table class="ride-table"><thead><tr><th>Ride</th><th>Type</th><th title="Rolling-resistance coefficient">Crr</th><th title="Drag area — coefficient of drag × frontal area">CdA</th><th title="Fit quality of the calibration">R²</th><th>Segments</th></tr></thead><tbody>${calibrations.map((calibration) => {
+    const [conf, typeLabel] = typeMeta(calibration.type);
+    const ride = calibration.type === "pooled"
+      ? `${calibration.params?.n_rides || "—"} rides`
+      : esc(calibration.filename || calibration.ride_id);
+    const segments = calibration.params?.n_rides
+      ? `${calibration.params.n_segments || "—"} · ${calibration.params.n_rides} rides`
+      : (calibration.params?.n_segments || "—");
+    return `<tr><td>${ride}</td><td>${confidenceTag(conf, typeLabel)}</td><td class="mono">${calibration.params?.crr ? Number(calibration.params.crr).toFixed(4) : "—"}</td><td class="mono">${calibration.params?.cdA ? Number(calibration.params.cdA).toFixed(2) : "—"}</td><td class="mono">${calibration.r2 != null ? Number(calibration.r2).toFixed(2) : "—"}</td><td class="mono">${segments}</td></tr>`;
+  }).join("")}</tbody></table></div>`;
 }
 
 /* ------------------------------------------------------------------ shell */

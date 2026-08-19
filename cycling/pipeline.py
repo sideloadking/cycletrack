@@ -10,8 +10,8 @@ import math
 import pathlib
 import time
 
-from . import config, elevation, geo, metrics as metrics_mod, power as power_mod
-from . import storage, weather as weather_mod
+from . import coast as coast_mod, config, elevation, geo, metrics as metrics_mod
+from . import power as power_mod, storage, weather as weather_mod
 
 
 def file_hash(path):
@@ -102,6 +102,17 @@ def import_fit_file(path, rider, bike, progress_cb=None, allow_duplicate=False,
             records, rider, bike, elev_summary, meta)
         storage.update_ride_metrics(ride_id, ride_metrics, records)
 
+    # Pooled cross-ride fit: with this ride now in the pool, fit a shared
+    # (Crr, CdA) + per-ride wind across every ride's trusted coasts. When it
+    # succeeds it applies to the bike and every ride is re-run with its own
+    # recovered wind (and any stored pedal tags). Auto-run only while the
+    # history is small; the manual button covers larger libraries.
+    if len(storage.list_rides()) <= config.POOLED_AUTO_MAX_RIDES:
+        pooled = try_pooled_calibrate(rider, bike)
+        if pooled:
+            _, calibrated_bike = storage.get_profile()
+            recalculate_rides(rider, calibrated_bike or bike)
+
     prog(100, "Done")
     return {
         "ride_id": ride_id,
@@ -133,6 +144,10 @@ def recalculate_rides(rider, bike):
         records = storage.get_ride_records(ride_id)
         if not records:
             continue
+        # Re-inject stored coast/pedal/brake tags so a profile change cannot
+        # silently drop them (and so a manual "pedal" tag recovers descent
+        # power — Phase 3).
+        coast_mod.apply_segment_overrides(records, storage.get_coast_segments(ride_id))
         weather = ride.get("weather") or {}
         # If this ride's calibration recovered an effective wind, keep using
         # it (same as the import path) so a profile change cannot silently
@@ -200,6 +215,97 @@ def _acceptable_loop(calib):
         and 0.002 <= calib["crr"] <= 0.01
         and 0.2 <= calib["cdA"] <= 0.55
     )
+
+
+def coast_model(max_hr):
+    """(weights, training_features) for the caution-first classifier, fitted
+    from the user's manual tags only (never auto labels). No tags => the
+    cold-start prior with no training features."""
+    tags = storage.list_manual_coast_segments()
+    by_ride = {}
+    for tag in tags:
+        by_ride.setdefault(tag["ride_id"], []).append(tag)
+    examples = []
+    for ride_id, segs in by_ride.items():
+        records = storage.get_ride_records(ride_id)
+        examples.extend(coast_mod.build_training_examples(records, segs, max_hr))
+    weights = coast_mod.fit_classifier(examples)
+    return weights, [feats for feats, _ in examples]
+
+
+def collect_coast_segments_by_ride(rider):
+    """Effective (trusted) coast segments for every stored ride.
+
+    Trust means a manual "coast" tag, or an untagged descent the
+    caution-first classifier confidently auto-labels coast — never a manual
+    "pedal"/"brake" and never the classifier's "ask"/"pedal" band. Returns
+    {ride_id: [segments]}.
+    """
+    max_hr = rider.get("max_hr") or power_mod._default_max_hr(rider)
+    weights, training_features = coast_model(max_hr)
+    out = {}
+    for row in storage.list_rides():
+        ride_id = row["id"]
+        records = storage.get_ride_records(ride_id)
+        coast_mod.apply_segment_overrides(
+            records, storage.get_coast_segments(ride_id))
+        segs = coast_mod.effective_coast_segments(
+            records, max_hr, weights, training_features)
+        if segs:
+            out[ride_id] = segs
+    return out
+
+
+def try_pooled_calibrate(rider, bike):
+    """Fit a shared Crr/CdA + per-ride wind across every ride's trusted
+    coasts and apply it when accepted. Returns the pooled dict or None when
+    the pool is insufficient (fall back to the single-ride loop fit)."""
+    segments_by_ride = collect_coast_segments_by_ride(rider)
+    if len(segments_by_ride) < 2:
+        return None
+    weather_by_ride = {}
+    for ride_id in segments_by_ride:
+        ride = storage.get_ride(ride_id)
+        weather_by_ride[ride_id] = (ride or {}).get("weather") or {}
+    pooled = power_mod.calibrate_pooled(
+        segments_by_ride, rider, bike, weather_by_ride)
+    if not _acceptable_pooled(pooled):
+        return None
+    _save_pooled_calibration(pooled)
+    return pooled
+
+
+def _acceptable_pooled(calib):
+    if not calib:
+        return False
+    return (
+        (calib.get("r2") or 0.0) > 0.6
+        and calib.get("n_rides", 0) >= 2
+        and calib.get("n_segments", 0) >= 3
+        and 0.002 <= calib["crr"] <= 0.01
+        and 0.2 <= calib["cdA"] <= 0.55
+    )
+
+
+def _save_pooled_calibration(pooled):
+    """Store one calibration row per contributing ride so each ride can
+    re-apply its own recovered wind via storage.get_ride_calibration."""
+    per_ride = pooled.get("per_ride_wind") or {}
+    for ride_id, wind in per_ride.items():
+        storage.save_calibration(ride_id, {
+            "type": "pooled",
+            "crr": pooled["crr"],
+            "cdA": pooled["cdA"],
+            "r2": pooled["r2"],
+            "n_segments": pooled["n_segments"],
+            "n_points": pooled["n_points"],
+            "n_rides": pooled["n_rides"],
+            "wind_recovered": True,
+            "wind_mps": wind["wind_mps"],
+            "wind_dir_deg": wind["wind_dir_deg"],
+            "crr_sigma": pooled.get("crr_sigma"),
+            "cdA_sigma": pooled.get("cdA_sigma"),
+        })
 
 
 def _acceptable_climb(calib):

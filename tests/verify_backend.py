@@ -507,6 +507,269 @@ def test_both_segments_calibration_recorded():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def test_coast_classification_and_storage():
+    """Phase 0 verified-coast: descents classify coast/pedal/ask with a
+    caution bias, and manual tags round-trip through the coast_segment table
+    and are removed with the ride."""
+    import pathlib
+    import shutil
+    import tempfile
+
+    from cycling import coast as coast_mod
+    from cycling import config, storage
+
+    def descent(hr, n=40):
+        return [{"t": float(i), "lat": 52.0, "lon": -1.5, "elev": 100.0,
+                 "grade": -0.05, "speed": 8.0, "dist": float(i) * 8.0,
+                 "hr": hr} for i in range(n)]
+
+    coast = coast_mod.classify_descents(descent(90.0), max_hr=180)
+    pedal = coast_mod.classify_descents(descent(160.0), max_hr=180)
+    ask = coast_mod.classify_descents(descent(125.0), max_hr=180)
+    assert coast[0]["label"] == "coast" and coast[0]["score"] >= 0.9, coast
+    assert pedal[0]["label"] == "pedal" and pedal[0]["score"] <= 0.1, pedal
+    assert ask[0]["label"] == "ask", ask
+
+    tmp = pathlib.Path(tempfile.mkdtemp(prefix="cycling_coast_"))
+    orig_db = config.DB_PATH
+    try:
+        config.DB_PATH = tmp / "cycling.db"
+        storage._conn = None
+        storage.init_db()
+        storage.save_coast_segments(7, [
+            {"t_start": 100.0, "t_end": 150.0, "label": "coast", "source": "manual"},
+            {"t_start": 300.0, "t_end": 340.0, "label": "pedal", "source": "manual"},
+        ])
+        rows = storage.get_coast_segments(7)
+        assert [(r["label"], r["source"]) for r in rows] == \
+            [("coast", "manual"), ("pedal", "manual")], rows
+        storage.delete_ride(7)
+        assert storage.get_coast_segments(7) == []
+    finally:
+        conn = getattr(storage, "_conn", None)
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        storage._conn = None
+        config.DB_PATH = orig_db
+        shutil.rmtree(tmp, ignore_errors=True)
+    print("coast classification + storage OK: coast/pedal/ask binning, "
+          "manual tags round-trip and delete with the ride")
+
+
+def test_manual_tag_changes_calibration_coasts():
+    """A manual 'pedal' tag must remove that descent from the loop fit's
+    coast set, and the tag must survive a profile recalculation."""
+    import pathlib
+    import shutil
+    import tempfile
+
+    from cycling import coast as coast_mod
+    from cycling import config, pipeline, storage
+
+    rider = {"weight_kg": 75.0, "max_hr": 180}
+    bike = {"mass_kg": 9.0, "cdA": 0.35, "crr": 0.005}
+    weather = {"temp_c": 15.0, "pressure_hpa": 1013.0, "wind_speed_mps": 0.0}
+    rho = power_mod.weather_air_density(weather)
+    true_crr, true_cdA = 0.005, 0.35
+
+    def coast_grade(v):
+        return -(true_crr + 0.5 * rho * true_cdA * v * v / (MASS * G))
+
+    segs = [
+        (0.05, 5.0, 90),
+        (coast_grade(7.0), 7.0, 120),
+        (0.05, 5.0, 90),
+        (coast_grade(5.0), 5.0, 160),
+        (0.04, 4.5, 80),
+        (coast_grade(10.0), 10.0, 90),
+        (0.05, 5.0, 90),
+        (coast_grade(8.0), 8.0, 110),
+    ]
+    records = make_coast_ride(segs)
+    for i in range(1, len(records)):
+        a, b = records[i - 1], records[i]
+        grade = (a["grade"] + b["grade"]) / 2.0
+        v = (a["speed"] + b["speed"]) / 2.0
+        dt = b["t"] - a["t"]
+        b["dist"] = a["dist"] + v * dt
+        b["elev"] = a["elev"] + grade * v * dt
+
+    base = power_mod.calibrate_loop(records, rider, bike, weather)
+    assert base is not None and base["n_segments"] >= 3, base
+
+    desc = coast_mod.find_descent_segments(records)
+    assert len(desc) >= 3, desc
+    first = desc[0]
+    coast_mod.apply_segment_overrides(records, [
+        {"t_start": first["t_start"], "t_end": first["t_end"], "label": "pedal"}])
+
+    tagged = power_mod.calibrate_loop(records, rider, bike, weather)
+    assert tagged is not None and tagged["n_segments"] < base["n_segments"], tagged
+
+    # Persist the tag and prove it survives a profile recalculation (the
+    # coast_segment table is not rewritten by recalculate_rides).
+    tmp = pathlib.Path(tempfile.mkdtemp(prefix="cycling_tag_"))
+    orig_db = config.DB_PATH
+    try:
+        config.DB_PATH = tmp / "cycling.db"
+        storage._conn = None
+        storage.init_db()
+        storage.save_coast_segments(7, [
+            {"t_start": first["t_start"], "t_end": first["t_end"],
+             "label": "pedal", "source": "manual"}])
+        pipeline.recalculate_rides(rider, bike)
+        rows = storage.get_coast_segments(7)
+        assert rows and rows[0]["label"] == "pedal", rows
+    finally:
+        conn = getattr(storage, "_conn", None)
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        storage._conn = None
+        config.DB_PATH = orig_db
+        shutil.rmtree(tmp, ignore_errors=True)
+    print(f"manual tag OK: pedal tag excluded a descent "
+          f"(n_segments {base['n_segments']} -> {tagged['n_segments']}) "
+          f"and survived recalc")
+
+
+def test_learned_classifier():
+    """The classifier learns from manual tags, stays cautious, and cold
+    start (no tags) is byte-for-byte the hand-tuned prior."""
+    from cycling import coast as coast_mod
+
+    def descent(hr, n=40):
+        return [{"t": float(i), "lat": 52.0, "lon": -1.5, "elev": 100.0,
+                 "grade": -0.05, "speed": 8.0, "dist": float(i) * 8.0, "hr": hr}
+                for i in range(n)]
+
+    # Cold start: no examples => the prior, unchanged.
+    assert coast_mod.fit_classifier([]) == coast_mod.default_weights()
+
+    # Coast tags move a pedal-classified descent out of the pedal bin.
+    prior = coast_mod.classify_descents(descent(148.0), max_hr=180)[0]
+    assert prior["label"] == "pedal", prior
+    feats = coast_mod.segment_features({"records": descent(148.0)}, 180)
+    weights = coast_mod.fit_classifier([(feats, 1.0)] * 8)
+    after = coast_mod.classify_descents(descent(148.0), max_hr=180, weights=weights)[0]
+    assert after["label"] != "pedal" and after["score"] > prior["score"], (prior, after)
+
+    # An all-pedal history still asks on a coast-like (novel) descent.
+    pedal_feats = coast_mod.segment_features({"records": descent(160.0)}, 180)
+    w2 = coast_mod.fit_classifier([(pedal_feats, 0.0)] * 6)
+    train = [pedal_feats] * 6
+    coastlike = coast_mod.classify_descents(
+        descent(90.0), max_hr=180, weights=w2, training_features=train)[0]
+    pedal = coast_mod.classify_descents(
+        descent(160.0), max_hr=180, weights=w2, training_features=train)[0]
+    assert coastlike["label"] == "ask" and coastlike["reason"] == "novel", coastlike
+    assert pedal["label"] == "pedal", pedal
+    print(f"learned classifier OK: coast tags lifted a pedal descent "
+          f"({prior['score']:.2f} -> {after['score']:.2f}); "
+          f"all-pedal history kept a coast-like descent as {coastlike['label']}")
+
+
+def test_pedal_tag_recovers_power():
+    """Phase 3: a manual 'pedal' tag keeps a descent in the power estimate
+    (mode='pedal', real watts) instead of zeroing it; untagged and
+    'coast'-tagged descents still read 0 W, and the recovered descent stays
+    low-confidence (user-asserted, not measured)."""
+    rider = {"weight_kg": 75.0, "max_hr": 180}
+    bike = {"mass_kg": 9.0, "cdA": 0.35, "crr": 0.005,
+            "drivetrain_efficiency": 0.97}
+    weather = {"temp_c": 15.0, "pressure_hpa": 1013.0, "wind_speed_mps": 0.0}
+    records = []
+    for i in range(60):
+        records.append({"t": float(i), "lat": 52.0, "lon": -1.5,
+                        "elev": 100.0 - 0.24 * i, "grade": -0.02,
+                        "speed": 12.0, "dist": i * 12.0, "hr": 150.0})
+
+    untagged = power_mod.compute_power([dict(r) for r in records],
+                                       rider, bike, weather)
+    assert all(r["mode"] == "coast" and r["watts_est"] == 0.0
+               for r in untagged)
+
+    tagged = power_mod.compute_power([dict(r, coast_label="pedal")
+                                      for r in records], rider, bike, weather)
+    assert all(r["mode"] == "pedal" for r in tagged)
+    assert any(r["watts_est"] > 0 for r in tagged)
+    assert all(r["confidence"] == "low" for r in tagged)
+
+    coast_tag = power_mod.compute_power([dict(r, coast_label="coast")
+                                         for r in records], rider, bike, weather)
+    assert all(r["watts_est"] == 0.0 for r in coast_tag)
+    print(f"pedal tag power OK: untagged 0 W, tagged "
+          f"{max(r['watts_est'] for r in tagged):.0f} W (low confidence)")
+
+
+def test_pooled_calibration_authoritative():
+    """Phase 2: a pooled fit applies to the bike like a loop fit, per-ride
+    winds are stored so each ride re-applies its own, and a later climb
+    diagnostic never shadows the pooled result."""
+    import pathlib
+    import shutil
+    import tempfile
+
+    from cycling import config, pipeline, storage
+
+    tmp = pathlib.Path(tempfile.mkdtemp(prefix="cycling_pooled_"))
+    orig_db = config.DB_PATH
+    try:
+        config.DB_PATH = tmp / "cycling.db"
+        storage._conn = None
+        storage.init_db()
+        storage.save_profile(
+            {"age": 40, "weight_kg": 75.0, "height_cm": 178.0,
+             "bike_type": "road", "sex": None, "resting_hr": 55,
+             "max_hr": 180, "hr_zones": None},
+            {"id": 1, "name": "Road bike", "mass_kg": 9.0, "crr": 0.005,
+             "cdA": 0.35, "drivetrain_efficiency": 0.97,
+             "calibrated": False},
+        )
+        pooled = {"type": "pooled", "crr": 0.0046, "cdA": 0.33, "r2": 0.9,
+                  "n_segments": 6, "n_points": 900, "n_rides": 2,
+                  "wind_recovered": True, "crr_sigma": 0.0004,
+                  "cdA_sigma": 0.009,
+                  "per_ride_wind": {1: {"wind_mps": 3.0, "wind_dir_deg": 45.0},
+                                    2: {"wind_mps": 5.0, "wind_dir_deg": 180.0}}}
+        pipeline._save_pooled_calibration(pooled)
+        # A later climb diagnostic on ride 1 must not shadow its pooled row.
+        storage.save_calibration(1, {"type": "climb", "crr": 0.0105,
+                                     "cdA": 0.35, "r2": None,
+                                     "n_segments": 2, "n_points": 100,
+                                     "crr_sigma": 0.0002, "diagnostic": True})
+
+        auth = storage.get_ride_calibration(1)
+        assert auth is not None and auth["type"] == "pooled", auth
+        assert auth.get("wind_recovered") is True
+        assert auth.get("wind_mps") == 3.0  # ride 1's own wind, not a shared one
+        auth2 = storage.get_ride_calibration(2)
+        assert auth2 is not None and auth2.get("wind_mps") == 5.0, auth2
+
+        _, bike = storage.get_profile()
+        assert bike["calibrated"] == 1
+        assert abs(bike["crr"] - 0.0046) < 1e-9  # pooled applied
+        assert abs(bike["cdA"] - 0.33) < 1e-9
+        print(f"pooled calibration OK: applied crr={bike['crr']:.4f} "
+              f"cdA={bike['cdA']:.2f}; per-ride winds "
+              f"{auth['wind_mps']} / {auth2['wind_mps']} m/s")
+    finally:
+        conn = getattr(storage, "_conn", None)
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        storage._conn = None
+        config.DB_PATH = orig_db
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 if __name__ == "__main__":
     test_compressed_timestamp_fit()
     test_route_detection()
@@ -519,4 +782,9 @@ if __name__ == "__main__":
     test_wind_direction_wrap()
     test_non_uk_weather_date()
     test_both_segments_calibration_recorded()
+    test_coast_classification_and_storage()
+    test_manual_tag_changes_calibration_coasts()
+    test_learned_classifier()
+    test_pedal_tag_recovers_power()
+    test_pooled_calibration_authoritative()
     print("\nAll backend checks passed.")

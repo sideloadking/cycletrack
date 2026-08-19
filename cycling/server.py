@@ -17,7 +17,7 @@ from fastapi import FastAPI, Body
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import config, metrics as metrics_mod, pipeline, power as power_mod, storage
+from . import coast as coast_mod, config, metrics as metrics_mod, pipeline, power as power_mod, storage
 
 WEB_DIR = pathlib.Path(__file__).resolve().parent.parent / "web"
 
@@ -309,6 +309,114 @@ def ride_series(ride_id: int, downsample: int = 1800):
     return storage.get_ride_series(ride_id, downsample=downsample)
 
 
+@app.get("/api/rides/{ride_id}/descents")
+def ride_descents(ride_id: int):
+    """Candidate descending runs with coast/pedal/ask classification.
+
+    Geometry-only candidates come from the stored (lidar-smoothed) grade; the
+    caution-first classifier labels them, and any manual tag stored on the
+    ride overrides the auto label.
+    """
+    ride = storage.get_ride(ride_id)
+    if ride is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    series = storage.get_ride_series(ride_id)
+    records = _series_to_records(series)
+    rider, _ = storage.get_profile()
+    rider = rider or dict(config.DEFAULT_RIDER)
+    max_hr = rider.get("max_hr") or power_mod._default_max_hr(rider)
+    weights, training_features = _coast_model(max_hr)
+
+    descents = coast_mod.classify_descents(records, max_hr, weights=weights,
+                                           training_features=training_features)
+    manual = storage.get_coast_segments(ride_id)
+    for d in descents:
+        d["source"] = "auto"
+        for m in manual:
+            if m.get("source") != "manual":
+                continue
+            if (abs(m["t_start"] - d["t_start"]) < 2.0
+                    and abs(m["t_end"] - d["t_end"]) < 2.0):
+                d["label"] = m["label"]
+                d["source"] = "manual"
+                break
+    return {"descents": descents}
+
+
+@app.post("/api/rides/{ride_id}/coast_segments")
+def save_coast_tag(ride_id: int, payload: dict = Body(...)):
+    """Upsert or clear a manual descent tag, then re-run this ride's loop
+    calibration with the updated trust set (and re-apply any recovered wind).
+
+    ``label`` is 'coast' | 'pedal' | 'brake', or null to clear the manual tag
+    and revert the descent to the auto classifier.
+    """
+    ride = storage.get_ride(ride_id)
+    if ride is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    t_start = float(payload.get("t_start", 0.0))
+    t_end = float(payload.get("t_end", 0.0))
+    label = payload.get("label")
+
+    manual = [s for s in storage.get_coast_segments(ride_id)
+              if s.get("source") == "manual"]
+    manual = [s for s in manual
+              if not (abs(s["t_start"] - t_start) < 2.0
+                      and abs(s["t_end"] - t_end) < 2.0)]
+    if label in ("coast", "pedal", "brake"):
+        manual.append({"t_start": t_start, "t_end": t_end, "label": label,
+                       "source": "manual", "score": None})
+    storage.save_coast_segments(ride_id, manual)
+
+    # Re-run calibration with the updated trust set, exactly like the manual
+    # /api/calibrate path but with the tags applied to the records.
+    records = _records_with_coast_tags(ride_id)
+    rider, bike = storage.get_profile()
+    rider = rider or dict(config.DEFAULT_RIDER)
+    bike = bike or dict(config.DEFAULT_BIKE)
+    weather = ride["weather"]
+    results = pipeline.try_auto_calibrate(ride_id, records, rider, bike, weather)
+
+    loop_fit = next((c for c in results if c.get("type") == "loop"), None)
+    if loop_fit and loop_fit.get("wind_recovered") and loop_fit.get("wind_mps") is not None:
+        eff_weather = dict(weather)
+        eff_weather["wind_speed_mps"] = loop_fit["wind_mps"]
+        eff_weather["wind_dir_deg"] = loop_fit["wind_dir_deg"]
+        records = power_mod.compute_power(records, rider, bike, eff_weather)
+        m = ride.get("metrics") or {}
+        elev_summary = {
+            "gain_m": m.get("elevation_gain_m") or ride.get("gain_m") or 0.0,
+            "min_elev": m.get("min_elev"),
+            "max_elev": m.get("max_elev"),
+            "elevation_source": ride.get("elevation_source") or m.get("elevation_source"),
+            "snapped_ratio": m.get("snapped_ratio", 0.0),
+        }
+        meta = {
+            "total_distance": ride.get("distance_m"),
+            "duration_seconds": ride.get("duration_s"),
+        }
+        metrics = metrics_mod.compute_ride_metrics(records, rider, bike, elev_summary, meta)
+        storage.update_ride_metrics(ride_id, metrics, records)
+
+    # A tag changes the pool of trusted coasts, so refresh the cross-ride fit
+    # too and let every ride re-apply its own recovered wind + pedal tags.
+    # The pooled Nelder-Mead + full recalculation is slow, so run it off the
+    # request thread — the tag and this ride's loop re-fit above are already
+    # done synchronously, and storage access is serialised by the module lock.
+    def _repool():
+        try:
+            if len(storage.list_rides()) <= config.POOLED_AUTO_MAX_RIDES:
+                pooled = pipeline.try_pooled_calibrate(rider, bike)
+                if pooled:
+                    fresh_rider, fresh_bike = storage.get_profile()
+                    pipeline.recalculate_rides(fresh_rider or rider, fresh_bike or bike)
+        except Exception:
+            pass
+    threading.Thread(target=_repool, daemon=True).start()
+
+    return {"ok": True, "descents": ride_descents(ride_id)["descents"]}
+
+
 @app.delete("/api/rides/{ride_id}")
 def delete_ride(ride_id: int):
     storage.delete_ride(ride_id)
@@ -386,14 +494,31 @@ def calibrations():
     return storage.list_calibrations()
 
 
+@app.post("/api/calibrate/pooled")
+def calibrate_pooled(payload: dict = Body(...)):
+    """Run the pooled cross-ride fit (shared Crr/CdA + per-ride wind) and
+    apply it to the bike when accepted, then re-run every ride with its own
+    recovered wind and any stored pedal tags."""
+    rider, bike = storage.get_profile()
+    rider = rider or dict(config.DEFAULT_RIDER)
+    bike = bike or dict(config.DEFAULT_BIKE)
+    pooled = pipeline.try_pooled_calibrate(rider, bike)
+    if pooled is None:
+        return JSONResponse(
+            {"error": "Not enough coasting descents across rides for a pooled fit"},
+            status_code=422)
+    fresh_rider, fresh_bike = storage.get_profile()
+    pipeline.recalculate_rides(fresh_rider or rider, fresh_bike or bike)
+    return {"calibration": pooled}
+
+
 @app.post("/api/calibrate/{ride_id}")
 def calibrate_ride(ride_id: int, payload: dict = Body(...)):
     """Re-run a calibration procedure on a stored ride."""
     ride = storage.get_ride(ride_id)
     if ride is None:
         return JSONResponse({"error": "not found"}, status_code=404)
-    series = storage.get_ride_series(ride_id)
-    records = _series_to_records(series)
+    records = _records_with_coast_tags(ride_id)
     rider, bike = storage.get_profile()
     rider = rider or dict(config.DEFAULT_RIDER)
     bike = bike or dict(config.DEFAULT_BIKE)
@@ -430,6 +555,23 @@ def calibrate_ride(ride_id: int, payload: dict = Body(...)):
         metrics = metrics_mod.compute_ride_metrics(records, rider, bike, elev_summary, meta)
         storage.update_ride_metrics(ride_id, metrics, records)
     return result
+
+
+def _coast_model(max_hr):
+    """(weights, training_features) for the caution-first classifier.
+
+    Fitted from the user's manual coast/pedal/brake tags only (never auto
+    labels), blended toward the cold-start prior. No tags => the prior
+    exactly as before, so cold start behaves identically to phase 0.
+    """
+    return pipeline.coast_model(max_hr)
+
+
+def _records_with_coast_tags(ride_id):
+    """Stored ride records with manual coast/pedal/brake tags applied."""
+    series = storage.get_ride_series(ride_id)
+    records = _series_to_records(series)
+    return coast_mod.apply_segment_overrides(records, storage.get_coast_segments(ride_id))
 
 
 def _series_to_records(series):

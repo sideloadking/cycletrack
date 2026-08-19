@@ -100,6 +100,18 @@ CREATE TABLE IF NOT EXISTS calibration (
     ride_id INTEGER NOT NULL, type TEXT, params TEXT, r2 REAL, created_at REAL
 );
 
+CREATE TABLE IF NOT EXISTS coast_segment (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ride_id INTEGER NOT NULL,
+    t_start REAL NOT NULL,
+    t_end REAL NOT NULL,
+    label TEXT NOT NULL,
+    source TEXT NOT NULL,
+    score REAL,
+    created_at REAL
+);
+CREATE INDEX IF NOT EXISTS idx_coast_ride ON coast_segment (ride_id);
+
 CREATE TABLE IF NOT EXISTS record (
     ride_id INTEGER, metric TEXT, value REAL, label TEXT
 );
@@ -391,7 +403,7 @@ def update_ride_metrics(ride_id, metrics, records):
 def delete_ride(ride_id):
     with _lock:
         conn = _connect()
-        for table in ("gps_point", "hr_point", "power_point", "calibration", "weather", "record"):
+        for table in ("gps_point", "hr_point", "power_point", "calibration", "coast_segment", "weather", "record"):
             conn.execute(f"DELETE FROM {table} WHERE ride_id = ?", (ride_id,))
         conn.execute("DELETE FROM ride WHERE id = ?", (ride_id,))
         conn.commit()
@@ -416,19 +428,27 @@ def _summarize(row):
 # Calibration
 # ---------------------------------------------------------------------------
 
-def get_ride_calibration(ride_id):
-    """Most recent *loop* calibration params for a ride (dict) or None.
+def _is_authoritative(cal_type):
+    """Whether a calibration type measures the bike independently (loop,
+    pooled) rather than being a diagnostic echo (climb)."""
+    return cal_type in ("loop", "pooled")
 
-    A ride can record both a loop fit and a climb diagnostic. The loop is the
-    authoritative one — only it measures the bike independently and carries
-    ``wind_recovered`` — so a climb must never shadow it here (this is used
-    by ``recalculate_rides`` to re-apply the recovered wind).
+
+def get_ride_calibration(ride_id):
+    """Most recent *authoritative* calibration params for a ride (dict) or None.
+
+    A ride can record a loop fit, a pooled fit and a climb diagnostic. The
+    loop/pooled fits are the authoritative ones — only they measure the bike
+    independently and carry ``wind_recovered`` — so a climb must never shadow
+    them here (this is used by ``recalculate_rides`` to re-apply the
+    recovered wind). Among authoritative fits the most recent wins.
     """
     with _lock:
         conn = _connect()
         row = conn.execute(
             "SELECT params FROM calibration WHERE ride_id = ? "
-            "ORDER BY (type = 'loop') DESC, created_at DESC, id DESC LIMIT 1",
+            "ORDER BY (type = 'loop' OR type = 'pooled') DESC, "
+            "created_at DESC, id DESC LIMIT 1",
             (ride_id,),
         ).fetchone()
     if row is None or not row["params"]:
@@ -447,12 +467,12 @@ def save_calibration(ride_id, calib):
                VALUES (?,?,?,?,?)""",
             (ride_id, calib["type"], json.dumps(calib), calib.get("r2"), _now()),
         )
-        if calib["type"] == "loop":
-            # Only the loop fit is an independent measurement of the bike's
-            # parameters: it uses coasting points whose rider power is zero by
-            # construction. The climb procedure is diagnostic — its watts come
-            # from the model's assumed Crr, so it cannot measure the true Crr
-            # and must not overwrite the profile.
+        if _is_authoritative(calib["type"]):
+            # Only loop/pooled fits are an independent measurement of the
+            # bike's parameters: they use coasting points whose rider power
+            # is zero by construction. The climb procedure is diagnostic — its
+            # watts come from the model's assumed Crr, so it cannot measure
+            # the true Crr and must not overwrite the profile.
             conn.execute(
                 "UPDATE bike SET crr = ?, cdA = ?, calibrated = 1, calibration = ? WHERE id = 1",
                 (calib["crr"], calib["cdA"], json.dumps(calib)),
@@ -474,9 +494,21 @@ def list_calibrations():
                LEFT JOIN ride r ON r.id = c.ride_id ORDER BY c.created_at DESC"""
         ).fetchall()
         out = []
+        seen_pooled = set()
         for row in rows:
             d = dict(row)
             d["params"] = json.loads(d["params"] or "{}")
+            # A pooled fit is stored as one row per contributing ride (so each
+            # ride can re-apply its own recovered wind); collapse the batch to
+            # a single history entry.
+            if d["type"] == "pooled":
+                key = (d["type"],
+                       round(d["params"].get("crr") or 0.0, 6),
+                       round(d["params"].get("cdA") or 0.0, 6),
+                       d["params"].get("n_rides"))
+                if key in seen_pooled:
+                    continue
+                seen_pooled.add(key)
             out.append(d)
         return out
 
@@ -484,6 +516,52 @@ def list_calibrations():
 def apply_calibration(ride_id, calib):
     """Re-run stored metrics with calibrated bike? Kept minimal: just save."""
     save_calibration(ride_id, calib)
+
+
+def get_coast_segments(ride_id):
+    """Stored coast/pedal/brake tags for a ride, ordered by start time."""
+    with _lock:
+        conn = _connect()
+        rows = conn.execute(
+            "SELECT t_start, t_end, label, source, score "
+            "FROM coast_segment WHERE ride_id = ? ORDER BY t_start",
+            (ride_id,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def list_manual_coast_segments():
+    """All manual coast/pedal/brake tags across rides (classifier training)."""
+    with _lock:
+        conn = _connect()
+        rows = conn.execute(
+            "SELECT ride_id, t_start, t_end, label FROM coast_segment "
+            "WHERE source = 'manual' ORDER BY ride_id, t_start",
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def save_coast_segments(ride_id, segments):
+    """Replace a ride's coast tags with ``segments`` (list of dicts).
+
+    Each segment dict carries ``t_start``, ``t_end``, ``label`` and optional
+    ``source`` (default 'auto') and ``score``. Callers that only change one
+    tag merge the full list first.
+    """
+    with _lock:
+        conn = _connect()
+        conn.execute("DELETE FROM coast_segment WHERE ride_id = ?", (ride_id,))
+        conn.executemany(
+            """INSERT INTO coast_segment
+               (ride_id, t_start, t_end, label, source, score, created_at)
+               VALUES (?,?,?,?,?,?,?)""",
+            [
+                (ride_id, s["t_start"], s["t_end"], s["label"],
+                 s.get("source", "auto"), s.get("score"), _now())
+                for s in segments
+            ],
+        )
+        conn.commit()
 
 
 # ---------------------------------------------------------------------------

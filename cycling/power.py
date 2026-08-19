@@ -10,6 +10,10 @@ tightens. Downhill sections are removed from the estimate entirely: on a
 descent speed + grade cannot separate pedalling, coasting and braking, so
 every point below ``config.DOWNHILL_GRADE`` is reported as ~0 W with a
 "coast" mode rather than a fake number, and excluded from power aggregates.
+The one exception is a manually tagged ``coast_label == "pedal"`` descent
+(verified-coast Phase 3): the owner has asserted they were pedalling, so
+that descent is estimated like any other pedalling point instead of being
+zeroed (kept at low confidence — the label is an assertion, not a sensor).
 """
 
 import math
@@ -113,7 +117,16 @@ def compute_power(records, rider, bike, weather):
     # braking — a noisy tens-of-watts residual is not effort. Every downhill
     # point is reported as ~0 W with a "coast" mode rather than a fake
     # number; metrics.py keeps these points out of all power aggregates.
-    coast = grades < config.DOWNHILL_GRADE
+    #
+    # Phase 3 exception: a manual "pedal" tag flips the descent back to a
+    # pedalling point (mode="pedal", real watts). The pedalling effort only
+    # surfaces when the rider pushed faster than the descent's coasting
+    # terminal speed — below that the energy balance is still net-negative
+    # and watts_est correctly reads ~0, exactly like a soft-pedalled descent.
+    pedal_override = np.array(
+        [r.get("coast_label") == "pedal" for r in records], dtype=bool
+    )
+    coast = (grades < config.DOWNHILL_GRADE) & ~pedal_override
 
     # --- Uncertainty propagation -------------------------------------------------
     calib = bike.get("calibration") if isinstance(bike.get("calibration"), dict) else None
@@ -184,6 +197,11 @@ def compute_power(records, rider, bike, weather):
             rec["watts_lo"] = float(watts_lo[i])
             rec["watts_hi"] = float(watts_hi[i])
             rec["confidence"] = conf_label[conf[i]]
+        # A user-asserted pedalled descent is an estimate, not a measurement:
+        # the label cannot separate pedalling from braking, so keep it low
+        # confidence even though gravity dominates the (negative) gradient.
+        if pedal_override[i]:
+            rec["confidence"] = "low"
         rec["mode"] = str(mode[i])
         out.append(rec)
     return out
@@ -259,18 +277,27 @@ def elevation_air_density(weather, elevs):
 # ---------------------------------------------------------------------------
 
 def find_coast_segments(records, max_hr=None):
-    """Contiguous descending, likely-coasting runs (speed + HR based)."""
+    """Contiguous descending, likely-coasting runs (speed + HR based).
+
+    A per-record ``coast_label`` override wins over the HR heuristic: a
+    manually tagged "coast" is trusted (it still has to be a descending,
+    moving run); a manually tagged "pedal" or "brake" is never treated as
+    coasting, whatever its heart rate.
+    """
     segs = []
     cur = []
     for r in records:
         grade = r.get("grade") or 0.0
         speed = r.get("speed") or 0.0
-        hr = r.get("hr")
-        coasting = (
-            grade < config.DOWNHILL_GRADE
-            and speed > 2.0
-            and (max_hr is None or hr is None or hr < 0.78 * max_hr)
-        )
+        label = r.get("coast_label")
+        descending = grade < config.DOWNHILL_GRADE and speed > 2.0
+        if label == "coast":
+            coasting = descending
+        elif label in ("pedal", "brake"):
+            coasting = False
+        else:
+            hr = r.get("hr")
+            coasting = descending and (max_hr is None or hr is None or hr < 0.78 * max_hr)
         if coasting:
             cur.append(r)
         else:
@@ -536,6 +563,225 @@ def calibrate_loop(records, rider, bike, weather):
         "n_points": sum(len(s) for s in segs),
         "wind_mps": weather.get("wind_speed_mps"),
         "wind_recovered": False,
+    }
+
+
+def calibrate_pooled(segments_by_ride, rider, bike, weather_by_ride):
+    """Shared Crr/CdA fit over coast segments pooled across rides, with one
+    wind (speed, direction) per ride.
+
+    Crr and CdA are the bike's constants, so they are shared across every
+    ride; the wind is a property of the day, so each ride gets its own
+    nuisance ``(w, phi)``. The two-stage solve keeps the dimension from
+    exploding as the ride count grows:
+
+      1. outer search over (Crr, CdA);
+      2. for each candidate, each ride's wind is a cheap 2-parameter
+         Nelder-Mead over that ride's coast points, seeded by the archived
+         weather wind.
+
+    ``segments_by_ride`` maps ``ride_id`` to a list of coast segments (each
+    segment a list of record dicts); ``weather_by_ride`` maps ``ride_id`` to
+    its weather dict (used for air density and the wind seed). Returns a
+    dict with shared ``crr``/``cdA``/sigmas, ``n_rides``/``n_segments``,
+    and ``per_ride_wind`` {ride_id: {wind_mps, wind_dir_deg}}, or None when
+    the pool cannot identify the wind (headings don't span the circle), the
+    pool is too small, or the fit is degenerate.
+    """
+    mass = float(rider.get("weight_kg", 75.0)) + float(bike.get("mass_kg", 9.0)) + KIT_MASS_KG
+
+    # --- Filter rides/segments and collect heading spread -----------------
+    rides = []
+    bearings = []
+    for ride_id, segs in segments_by_ride.items():
+        weather = weather_by_ride.get(ride_id) or {}
+        rho = weather_air_density(weather)
+        kept = []
+        for seg in segs:
+            dh, ds, v3dt = _segment_integrals(seg, rho)
+            if ds > 50 and v3dt > 0 and dh > 0:
+                kept.append(seg)
+                lats = np.array([p["lat"] for p in seg], dtype=float)
+                lons = np.array([p["lon"] for p in seg], dtype=float)
+                bearings.append(float(np.median(_bearing(lats, lons))))
+        if kept:
+            rides.append({
+                "ride_id": ride_id,
+                "segs": kept,
+                "rho": rho,
+                "seed_ws": float(weather.get("wind_speed_mps", 0.0)),
+                "seed_wd": float(weather.get("wind_dir_deg", 0.0)),
+            })
+
+    if len(rides) < 2:
+        return None
+    n_segments = sum(len(r["segs"]) for r in rides)
+    if n_segments < 3:
+        return None
+
+    # Wind identifiability: pooled coast headings must span the circle with
+    # no gap over 180°, the same check the single-ride loop fit uses.
+    brgs = sorted(bearings)
+    gaps = [brgs[(i + 1) % len(brgs)] - brgs[i] for i in range(len(brgs))]
+    gaps[-1] += 2 * math.pi
+    if max(gaps) > math.pi:
+        return None
+
+    # --- Per-point design data (fixed; only the wind changes per candidate) --
+    data = []
+    for ride in rides:
+        v_all, th_all, brg_all, b_all, roll_all = [], [], [], [], []
+        for seg in ride["segs"]:
+            speeds = np.array([p.get("speed") or 0.0 for p in seg], dtype=float)
+            vs = _smoothed_speed(speeds)
+            lats = np.array([p["lat"] for p in seg], dtype=float)
+            lons = np.array([p["lon"] for p in seg], dtype=float)
+            brg = _bearing(lats, lons)
+            ts = np.array([p["t"] for p in seg], dtype=float)
+            acc = np.zeros(len(seg))
+            dt = np.diff(ts)
+            dv = np.diff(vs)
+            with np.errstate(divide="ignore", invalid="ignore"):
+                a = np.where(dt > 0, dv / np.maximum(dt, 1e-6), 0.0)
+            acc[:-1] = np.clip(a, -3.0, 3.0)
+            for i in range(len(seg)):
+                grade = seg[i].get("grade") or 0.0
+                theta = math.atan(max(-1.0, min(1.0, grade)))
+                v_all.append(vs[i])
+                th_all.append(theta)
+                brg_all.append(brg[i])
+                # Gravity + inertia must be exactly balanced by roll + aero.
+                b_all.append(-(mass * G * math.sin(theta) + mass * 1.05 * acc[i]) * vs[i])
+                roll_all.append(mass * G * math.cos(theta) * vs[i])
+        data.append({
+            "ride_id": ride["ride_id"],
+            "v": np.array(v_all),
+            "th": np.array(th_all),
+            "brg": np.array(brg_all),
+            "b": np.array(b_all),
+            "roll": np.array(roll_all),
+            "rho": ride["rho"],
+            "seed_ws": ride["seed_ws"],
+            "seed_wd": ride["seed_wd"],
+        })
+
+    def _ride_resid(ride, crr, cdA, w, phi):
+        ph = math.radians(phi % 360.0) - ride["brg"]
+        hw = w * np.cos(ph)
+        cw = w * np.sin(ph)
+        v_along = ride["v"] + hw
+        v_air = np.hypot(v_along, cw)
+        aero = 0.5 * ride["rho"] * v_air * v_along * ride["v"]
+        return crr * ride["roll"] + cdA * aero - ride["b"]
+
+    def _ride_best(ride, crr, cdA):
+        """Per-ride wind (w, phi) that best balances this ride's coasts."""
+        def cost(wp):
+            w, phi = float(wp[0]), float(wp[1])
+            pen = 0.0
+            if w < 0.0:
+                pen += 1e6 * w * w
+            elif w > 20.0:
+                pen += 1e6 * (w - 20.0) ** 2
+            r = _ride_resid(ride, crr, cdA, w, phi)
+            return float(r @ r) + pen
+
+        from scipy.optimize import minimize
+        seeds = [(ride["seed_ws"], ride["seed_wd"])]
+        if ride["seed_ws"] < 0.5:
+            seeds.append((0.0, 0.0))
+        else:
+            seeds.append((ride["seed_ws"] * 0.5, (ride["seed_wd"] + 180.0) % 360.0))
+        best = None
+        for seed in seeds:
+            res = minimize(cost, seed, method="Nelder-Mead",
+                           options={"maxiter": 200, "xatol": 1e-3, "fatol": 1e-8})
+            if best is None or res.fun < best.fun:
+                best = res
+        return best
+
+    def _pooled_cost(params):
+        crr, cdA = float(params[0]), float(params[1])
+        # Soft physical-box penalty mirrors _fit_loop_wind's outer sweep.
+        pen = 0.0
+        for val, lo, hi, wgt in ((crr, 0.001, 0.012, 1e6),
+                                 (cdA, 0.15, 0.6, 1e4)):
+            if val < lo:
+                pen += wgt * (lo - val) ** 2
+            elif val > hi:
+                pen += wgt * (val - hi) ** 2
+        total = pen
+        for ride in data:
+            total += _ride_best(ride, crr, cdA).fun
+        return total
+
+    from scipy.optimize import minimize
+    bike_crr = float(bike.get("crr", 0.005))
+    bike_cdA = float(bike.get("cdA", 0.35))
+    outer_seeds = [
+        (bike_crr, bike_cdA),
+        (0.005, 0.35),
+        (0.003, 0.30),
+        (0.008, 0.45),
+    ]
+    best = None
+    for seed in outer_seeds:
+        res = minimize(_pooled_cost, seed, method="Nelder-Mead",
+                       options={"maxiter": 300, "xatol": 1e-4, "fatol": 1e-8})
+        if best is None or res.fun < best.fun:
+            best = res
+    crr = float(best.x[0])
+    cdA = float(best.x[1])
+    if not (0.001 <= crr <= 0.012 and 0.15 <= cdA <= 0.6):
+        return None
+
+    # Recover the per-ride winds and statistics at the optimum.
+    per_ride_wind = {}
+    ss_res = 0.0
+    b_parts = []
+    A_parts = []
+    for ride in data:
+        rbest = _ride_best(ride, crr, cdA)
+        w = float(rbest.x[0])
+        phi = float(rbest.x[1]) % 360.0
+        if not (0.0 <= w <= 20.0):
+            return None
+        per_ride_wind[ride["ride_id"]] = {"wind_mps": w, "wind_dir_deg": phi}
+        r = _ride_resid(ride, crr, cdA, w, phi)
+        ss_res += float(r @ r)
+        b_parts.append(ride["b"])
+        ph = math.radians(phi) - ride["brg"]
+        hw = w * np.cos(ph)
+        cw = w * np.sin(ph)
+        v_along = ride["v"] + hw
+        v_air = np.hypot(v_along, cw)
+        aero = 0.5 * ride["rho"] * v_air * v_along * ride["v"]
+        A_parts.append(np.column_stack([ride["roll"], aero]))
+    b_all = np.concatenate(b_parts)
+    A = np.vstack(A_parts)
+    ss_tot = float(np.sum((b_all - b_all.mean()) ** 2)) or 1e-9
+    r2 = 1.0 - ss_res / ss_tot
+    n_points = len(b_all)
+    # Residual variance after accounting for the shared (crr, cdA) and one
+    # wind per ride; the linearised covariance of (crr, cdA) at the optimum
+    # mirrors _fit_loop_wind.
+    sigma2 = ss_res / max(1, n_points - 2 - 2 * len(data))
+    cov = sigma2 * np.linalg.pinv(A.T @ A)
+    crr_sigma = float(np.sqrt(max(cov[0, 0], 0.0)))
+    cdA_sigma = float(np.sqrt(max(cov[1, 1], 0.0)))
+
+    return {
+        "type": "pooled",
+        "crr": crr,
+        "cdA": cdA,
+        "r2": r2,
+        "n_segments": n_segments,
+        "n_points": n_points,
+        "n_rides": len(rides),
+        "wind_recovered": True,
+        "crr_sigma": crr_sigma,
+        "cdA_sigma": cdA_sigma,
+        "per_ride_wind": per_ride_wind,
     }
 
 

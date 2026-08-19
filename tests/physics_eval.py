@@ -570,6 +570,218 @@ def M6_real_ride():
 
 
 # ---------------------------------------------------------------------------
+# Verified-coast classifier checks (F-series, phase 0)
+# ---------------------------------------------------------------------------
+
+def _descent_ride(hr, n=40, grade=-0.05, speed=8.0):
+    """One continuous coast-plausible descent with constant HR (or None)."""
+    records = []
+    for i in range(n):
+        rec = {"t": float(i), "lat": 52.0, "lon": -1.5, "elev": 100.0 - 0.4 * i,
+               "grade": grade, "speed": speed, "dist": float(i) * speed}
+        if hr is not None:
+            rec["hr"] = hr
+        records.append(rec)
+    return records
+
+
+def F1_classification():
+    """Coast/pedal/ask binning on synthetic descents: resting HR => coast,
+    working HR => pedal, the middle => ask."""
+    from cycling import coast as coast_mod
+    coast = coast_mod.classify_descents(_descent_ride(90.0), max_hr=180)
+    pedal = coast_mod.classify_descents(_descent_ride(160.0), max_hr=180)
+    ask = coast_mod.classify_descents(_descent_ride(125.0), max_hr=180)
+    ok = (len(coast) == len(pedal) == len(ask) == 1
+          and coast[0]["label"] == "coast" and coast[0]["score"] >= 0.9
+          and pedal[0]["label"] == "pedal" and pedal[0]["score"] <= 0.1
+          and ask[0]["label"] == "ask")
+    return {"ok": ok, "coast": coast[0]["label"], "pedal": pedal[0]["label"],
+            "ask": ask[0]["label"],
+            "scores": [round(coast[0]["score"] or 0.0, 2),
+                       round(pedal[0]["score"] or 0.0, 2),
+                       round(ask[0]["score"] or 0.0, 2)]}
+
+
+def F6_caution():
+    """Caution regressions: missing HR asks, near-threshold asks, and an
+    all-pedal tag history still asks on a coast-like (novel) descent instead
+    of collapsing to always-pedal."""
+    from cycling import coast as coast_mod
+    nohr = coast_mod.classify_descents(_descent_ride(None), max_hr=180)
+    near = coast_mod.classify_descents(_descent_ride(140.0), max_hr=180)
+
+    pedal_feats = coast_mod.segment_features({"records": _descent_ride(160.0)}, 180)
+    weights = coast_mod.fit_classifier([(pedal_feats, 0.0)] * 6)
+    train = [pedal_feats] * 6
+    coastlike = coast_mod.classify_descents(
+        _descent_ride(90.0), max_hr=180, weights=weights, training_features=train)
+    pedal = coast_mod.classify_descents(
+        _descent_ride(160.0), max_hr=180, weights=weights, training_features=train)
+
+    ok = (nohr[0]["label"] == "ask" and nohr[0]["score"] is None
+          and near[0]["label"] == "ask"
+          and coastlike[0]["label"] == "ask" and coastlike[0]["reason"] == "novel"
+          and pedal[0]["label"] == "pedal")
+    return {"ok": ok, "no_hr": nohr[0]["label"],
+            "near_threshold": near[0]["label"],
+            "coastlike_after_all_pedal": coastlike[0]["label"],
+            "pedal_after_all_pedal": pedal[0]["label"]}
+
+
+def F7_learning():
+    """A synthetic tag history shifts predictions toward the tags: coast tags
+    move a pedal-classified descent out of the pedal bin, and pedal tags move
+    a coast-classified descent down."""
+    from cycling import coast as coast_mod
+
+    prior_148 = coast_mod.classify_descents(_descent_ride(148.0), max_hr=180)[0]
+    feats_148 = coast_mod.segment_features({"records": _descent_ride(148.0)}, 180)
+    coast_weights = coast_mod.fit_classifier([(feats_148, 1.0)] * 8)
+    coast_after = coast_mod.classify_descents(
+        _descent_ride(148.0), max_hr=180, weights=coast_weights)[0]
+
+    prior_90 = coast_mod.classify_descents(_descent_ride(90.0), max_hr=180)[0]
+    feats_90 = coast_mod.segment_features({"records": _descent_ride(90.0)}, 180)
+    pedal_weights = coast_mod.fit_classifier([(feats_90, 0.0)] * 8)
+    pedal_after = coast_mod.classify_descents(
+        _descent_ride(90.0), max_hr=180, weights=pedal_weights)[0]
+
+    ok = (prior_148["label"] == "pedal"
+          and coast_after["label"] != "pedal"
+          and coast_after["score"] > prior_148["score"]
+          and pedal_after["score"] < prior_90["score"])
+    return {"ok": ok,
+            "prior_148": round(prior_148["score"] or 0.0, 3),
+            "after_coast_tags": round(coast_after["score"] or 0.0, 3),
+            "prior_90": round(prior_90["score"] or 0.0, 3),
+            "after_pedal_tags": round(pedal_after["score"] or 0.0, 3)}
+
+
+def F2_pooled_recovery():
+    """Pooled fit recovers the shared Crr/CdA across two loop rides with
+    *different* winds, and recovers each ride's own wind from a perturbed
+    archive seed (proving the per-ride wind structure, not one global wind)."""
+    phys1 = {"crr": 0.005, "cdA": 0.35, "rho": true_rho(),
+             "wind_speed_mps": 3.0, "wind_dir_deg": 45.0, "mass_kg": MASS}
+    phys2 = {"crr": 0.005, "cdA": 0.35, "rho": true_rho(),
+             "wind_speed_mps": 6.0, "wind_dir_deg": 180.0, "mass_kg": MASS}
+    ride1 = build_loop_ride(phys1, seed=2)
+    ride2 = build_loop_ride(phys2, seed=3)
+    segs1 = power_mod.find_coast_segments(ride1, RIDER["max_hr"])
+    segs2 = power_mod.find_coast_segments(ride2, RIDER["max_hr"])
+    pooled = power_mod.calibrate_pooled(
+        {1: segs1, 2: segs2}, RIDER, BIKE,
+        {1: weather_from(4.0, 55.0), 2: weather_from(5.0, 165.0)})
+    if pooled is None:
+        return {"ok": False, "reason": "no pooled fit",
+                "crr_err": None, "cdA_err": None}
+    w1 = pooled["per_ride_wind"][1]
+    w2 = pooled["per_ride_wind"][2]
+
+    def dir_close(a, b):
+        return min(abs(a - b), 360.0 - abs(a - b))
+
+    ok = (abs(pooled["crr"] - 0.005) <= 0.0015
+          and abs(pooled["cdA"] - 0.35) <= 0.03
+          and abs(w1["wind_mps"] - 3.0) <= 1.5
+          and dir_close(w1["wind_dir_deg"], 45.0) <= 20.0
+          and abs(w2["wind_mps"] - 6.0) <= 1.5
+          and dir_close(w2["wind_dir_deg"], 180.0) <= 20.0
+          and pooled["n_rides"] == 2)
+    return {"ok": ok,
+            "crr_err": round(abs(pooled["crr"] - 0.005), 5),
+            "cdA_err": round(abs(pooled["cdA"] - 0.35), 4),
+            "wind1": (round(w1["wind_mps"], 1), round(w1["wind_dir_deg"], 1)),
+            "wind2": (round(w2["wind_mps"], 1), round(w2["wind_dir_deg"], 1)),
+            "r2": round(pooled["r2"], 3),
+            "n_segments": pooled["n_segments"]}
+
+
+def F3_pedal_override_power():
+    """A manual 'pedal' label on a descent yields mode='pedal' and nonzero
+    watts; untagged and 'coast'-tagged descents stay ~0 W."""
+    records = []
+    for i in range(60):
+        records.append({"t": float(i), "lat": 52.0, "lon": -1.5,
+                        "elev": 100.0 - 0.24 * i, "grade": -0.02,
+                        "speed": 12.0, "dist": i * 12.0, "hr": 150.0})
+    weather = weather_from(0.0, 0.0)
+    untagged = power_mod.compute_power([dict(r) for r in records],
+                                       RIDER, BIKE, weather)
+    tagged = power_mod.compute_power([dict(r, coast_label="pedal")
+                                      for r in records], RIDER, BIKE, weather)
+    coast_tag = power_mod.compute_power([dict(r, coast_label="coast")
+                                         for r in records], RIDER, BIKE, weather)
+    ok = (all(r["mode"] == "coast" and r["watts_est"] == 0.0 for r in untagged)
+          and all(r["mode"] == "pedal" for r in tagged)
+          and any(r["watts_est"] > 0 for r in tagged)
+          and all(r["confidence"] == "low" for r in tagged)
+          and all(r["watts_est"] == 0.0 for r in coast_tag))
+    return {"ok": ok,
+            "untagged_mode": untagged[0]["mode"],
+            "pedal_median_watts": round(float(np.median(
+                [r["watts_est"] for r in tagged])), 1),
+            "coast_tag_watts": coast_tag[0]["watts_est"]}
+
+
+def F4_pooled_identifiability():
+    """Pooled fit must reject single-direction coverage: two rides whose
+    descents all face the same heading cannot separate wind from CdA."""
+    phys = {"crr": 0.005, "cdA": 0.35, "rho": true_rho(),
+            "wind_speed_mps": 0.0, "wind_dir_deg": 0.0, "mass_kg": MASS}
+
+    def downhill(seed):
+        segs = []
+        for _ in range(2):
+            segs.append({"heading_deg": 180, "grade": 0.05, "dur_s": 60,
+                         "power": 260.0})
+            segs.append({"heading_deg": 180, "grade": -0.06, "dur_s": 120,
+                         "power": 0.0})
+        return simulate(segs, phys, seed=seed)
+
+    ride1 = downhill(3)
+    ride2 = downhill(4)
+    segs1 = power_mod.find_coast_segments(ride1, RIDER["max_hr"])
+    segs2 = power_mod.find_coast_segments(ride2, RIDER["max_hr"])
+    if not segs1 or not segs2:
+        return {"ok": False, "reason": "no coast segments",
+                "n1": len(segs1), "n2": len(segs2)}
+    pooled = power_mod.calibrate_pooled(
+        {1: segs1, 2: segs2}, RIDER, BIKE,
+        {1: weather_from(0.0, 0.0), 2: weather_from(0.0, 0.0)})
+    return {"ok": pooled is None, "result": None if pooled is None else "fit",
+            "n_segments": len(segs1) + len(segs2)}
+
+
+def F5_real_descents():
+    """The repo .fit must produce at least one candidate descent (geometry
+    only, no HR filter) and classify it without error."""
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    fits = sorted(f for f in os.listdir(root) if f.lower().endswith(".fit"))
+    if not fits:
+        return {"ok": True, "reason": "no .fit file present", "n": 0}
+    from cycling import coast as coast_mod
+    from cycling import fit_parser
+    records, _ = fit_parser.parse_fit(os.path.join(root, fits[0]))
+    # Device altitude -> smooth grade (mirror M6; the stored ride uses the
+    # lidar-smoothed grade instead).
+    alts = np.array([r.get("alt_raw") or 0.0 for r in records], dtype=float)
+    alts = np.convolve(alts, np.ones(31) / 31.0, mode="same")
+    d = np.diff(alts)
+    dt = np.diff([r["t"] for r in records])
+    vv = np.array([r.get("speed") or 0.0 for r in records], dtype=float)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        grade = np.where(dt > 0, d / np.maximum(vv[:-1] * dt, 1e-6), 0.0)
+    grade = np.clip(grade, -0.2, 0.2)
+    for i, r in enumerate(records):
+        r["grade"] = float(grade[i]) if i < len(grade) else float(grade[-1])
+    descents = coast_mod.classify_descents(records, max_hr=180)
+    return {"ok": len(descents) >= 1, "n": len(descents), "file": fits[0],
+            "labels": sorted({d["label"] for d in descents})}
+
+
+# ---------------------------------------------------------------------------
 # Ride builders
 # ---------------------------------------------------------------------------
 
@@ -629,6 +841,13 @@ def main():
     checks["M14 climb non-default crr diagnostic"] = M14_climb_nondefault_crr(phys)
     checks["M15 NP order"] = M15_np_order()
     checks["M16 climb windy echo"] = M16_climb_windy_echo(phys)
+    checks["F1 coast classification"] = F1_classification()
+    checks["F2 pooled recovery"] = F2_pooled_recovery()
+    checks["F3 pedal override power"] = F3_pedal_override_power()
+    checks["F4 pooled identifiability"] = F4_pooled_identifiability()
+    checks["F5 real .fit descents"] = F5_real_descents()
+    checks["F6 caution (no-HR/near-threshold)"] = F6_caution()
+    checks["F7 learning shifts toward tags"] = F7_learning()
 
     print("=" * 62)
     for name, m in checks.items():

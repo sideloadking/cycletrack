@@ -362,6 +362,16 @@ svg { display: block; }
 .readout__label { overflow: hidden; color: var(--subtle); font: 600 11px/15px var(--font-data); letter-spacing: .08em; text-overflow: ellipsis; text-transform: uppercase; white-space: nowrap; }
 .readout__value { margin-top: 7px; overflow: hidden; color: var(--ink); font: 700 15px/20px var(--font-data); font-variant-numeric: tabular-nums; text-overflow: ellipsis; white-space: nowrap; }
 .readout__note { margin-top: 3px; overflow: hidden; color: var(--orange-deep); font: 500 11px/15px var(--font-data); text-overflow: ellipsis; white-space: nowrap; }
+.descents { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--line); }
+.descents__title h3 { margin: 0; font: 700 15px/1.2 var(--font-body); }
+.descents__title p { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
+.descents__seek { cursor: pointer; }
+.descents .list-row { align-items: center; }
+@media (max-width: 560px) {
+  .descents .list-row { align-items: flex-start; flex-direction: column; gap: 10px; }
+  .descents__tags { width: 100%; }
+  .descents__tags button { flex: 1; }
+}
 .telemetry-graphs { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 20px; margin-top: 20px; }
 .telemetry-graph { min-width: 0; padding: 20px 22px; }
 .drift-card { margin-top: 20px; padding: 24px; }

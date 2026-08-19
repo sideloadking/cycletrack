@@ -155,6 +155,11 @@ DRIFT_MERGE_GAP_S = 90.0      # bridge stops at junctions shorter than this
 DRIFT_CV_POWER = 0.25         # max CV of *smoothed* estimated watts
 DRIFT_CV_SPEED = 0.35         # max coefficient of variation of speed
 
+# Pooled cross-ride calibration is auto-run on import/tag-save only while the
+# history is small (the Nelder-Mead fit + full recalculation grows with the
+# ride count). The manual "Run pooled calibration" button always works.
+POOLED_AUTO_MAX_RIDES = 50
+
 # Weather: Open-Meteo archive (no API key), used for air density + wind.
 OPEN_METEO_ARCHIVE = "https://archive-api.open-meteo.com/v1/archive"
 
