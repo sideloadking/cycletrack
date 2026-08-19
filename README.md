@@ -17,6 +17,20 @@ On Windows you can also double-click **`run.bat`** (console) or **`run.pyw`**
 in your browser automatically. There is also an optional native Tauri shell in
 [`tauri/`](tauri/README.md).
 
+### Browser regression checks
+
+The deterministic frontend checks serve the real SPA and mock only its API,
+so they do not read or modify your local ride database:
+
+```sh
+python -m pip install -r tests/requirements-browser.txt
+python -m playwright install chromium
+python tests/browser_regression.py
+```
+
+They cover the Overview charts, FIT import queue, ride replay and descent
+review, and targeted recovery from a partial Overview failure.
+
 ## What it does per imported file
 
 ```
