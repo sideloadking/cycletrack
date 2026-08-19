@@ -16,6 +16,10 @@ const state = {
   cursorFrame: null,
   cursor: null,
   overview: null,
+  abortController: null,
+  jobPoller: null,
+  jobPollerIds: new Set(),
+  jobStatusSignature: "",
 };
 
 /* Chart palette reads the Route Atlas tokens so CSS and SVG never drift apart. */
@@ -34,24 +38,13 @@ const GRAPH = {
   green: GRAPH_CSS("--green", "#1b6f4d"),
   greenDeep: GRAPH_CSS("--green-deep", "#11553a"),
   greenSoft: hexToRgba(GRAPH_CSS("--green", "#1b6f4d"), .14),
-  greenWash: hexToRgba(GRAPH_CSS("--green", "#1b6f4d"), .07),
   blue: GRAPH_CSS("--blue", "#3b6ea5"),
-  blueSoft: hexToRgba(GRAPH_CSS("--blue", "#3b6ea5"), .12),
   orange: GRAPH_CSS("--orange", "#a8691f"),
   /* Bands are the honest envelope of every estimate, so their fill needs real
      presence — a faint ghost reads as a rendering bug, not an uncertainty. */
   orangeSoft: hexToRgba(GRAPH_CSS("--orange", "#a8691f"), .22),
-  orangeDeep: GRAPH_CSS("--orange-deep", "#825012"),
-  /* Red stays out of charts and the map — it belongs to destructive actions
-     and real errors only. Heart rate reads as a measured ink channel. */
-  red: GRAPH_CSS("--red", "#b44c4b"),
-  grid: GRAPH_CSS("--graph-grid", "#edf1ee"),
-  gridStrong: GRAPH_CSS("--graph-grid-strong", "#d3ddd6"),
   ink: GRAPH_CSS("--ink-soft", "#34423a"),
   muted: GRAPH_CSS("--muted", "#55655c"),
-  faint: GRAPH_CSS("--subtle", "#5c6b63"),
-  line: GRAPH_CSS("--line", "#dfe7e1"),
-  surface: GRAPH_CSS("--surface", "#ffffff"),
   cursor: GRAPH_CSS("--graph-cursor", "#123a28"),
 };
 let graphInstanceId = 0;
@@ -71,12 +64,13 @@ const routes = {
 
 async function api(path, options = {}) {
   const config = { ...options, headers: { "Content-Type": "application/json", ...(options.headers || {}) } };
+  config.signal = options.signal || state.abortController?.signal;
   if (options.body && typeof options.body !== "string") config.body = JSON.stringify(options.body);
   const response = await fetch(path, config);
   if (!response.ok) {
-    let message = `Request failed (${response.status})`;
-    try { message = (await response.json()).error || message; } catch (_) { /* plain response */ }
-    throw new Error(message);
+    let detail = "";
+    try { detail = String((await response.json()).error || "").trim(); } catch (_) {}
+    throw new Error(detail || `Request failed (${response.status})`);
   }
   return response.json();
 }
@@ -84,13 +78,30 @@ async function api(path, options = {}) {
 async function loadOverview() {
   try {
     return await api("/api/overview");
-  } catch (_) {
-    const [rides, fitness, records, power, drift, routesList, wattsHr] = await Promise.all([
-      api("/api/rides"), api("/api/trends/fitness"), api("/api/records"),
-      api("/api/trends/power"), api("/api/trends/cardiac"), api("/api/routes"),
-      api("/api/trends/watts_hr"),
-    ]);
-    return { rides, fitness, records, power, drift, routes: routesList, wattsHr };
+  } catch (primaryError) {
+    if (primaryError?.name === "AbortError") throw primaryError;
+    const requests = [
+      ["rides", "/api/rides"],
+      ["fitness", "/api/trends/fitness"],
+      ["records", "/api/records"],
+      ["power", "/api/trends/power"],
+      ["drift", "/api/trends/cardiac"],
+      ["wattsHr", "/api/trends/watts_hr"],
+    ];
+    const results = await Promise.allSettled(requests.map(([, path]) => api(path)));
+    const failures = Object.fromEntries(results.flatMap((result, index) => result.status === "rejected" ? [[requests[index][0], result.reason]] : []));
+    const value = (index, fallback) => results[index].status === "fulfilled" ? results[index].value : fallback;
+    const rides = value(0, null);
+    if (!rides) throw primaryError;
+    return {
+      rides,
+      fitness: value(1, { points: [] }),
+      records: value(2, []),
+      power: value(3, { series: {}, curves: [] }),
+      drift: value(4, { points: [] }),
+      wattsHr: value(5, { fixed_hrs: [], series: {} }),
+      failures,
+    };
   }
 }
 
@@ -98,39 +109,54 @@ async function loadOverview() {
 
 const dateFormat = new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short", year: "numeric" });
 const dateTimeFormat = new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+const timeFormat = new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" });
 
 function esc(value) {
   return String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]));
 }
-function fmtDate(unix) { return unix ? dateFormat.format(new Date(unix * 1000)) : "—"; }
-function fmtDateTime(unix) { return unix ? dateTimeFormat.format(new Date(unix * 1000)) : "—"; }
+function finiteValue(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+function validDate(unix) {
+  const value = finiteValue(unix);
+  if (value == null || value <= 0) return null;
+  const date = new Date(value * 1000);
+  return Number.isFinite(date.getTime()) ? date : null;
+}
+function fmtDate(unix) { const date = validDate(unix); return date ? dateFormat.format(date) : "—"; }
+function fmtDateTime(unix) { const date = validDate(unix); return date ? dateTimeFormat.format(date) : "—"; }
+function fmtTime(unix) { const date = validDate(unix); return date ? timeFormat.format(date) : "—"; }
 function fmtDuration(seconds) {
-  if (seconds == null || Number.isNaN(+seconds)) return "—";
-  const value = Math.max(0, Math.round(seconds));
+  const numeric = finiteValue(seconds);
+  if (numeric == null) return "—";
+  const value = Math.max(0, Math.round(numeric));
   const h = Math.floor(value / 3600), m = Math.floor((value % 3600) / 60), s = value % 60;
   return h ? `${h}:${String(m).padStart(2, "0")}\u2009h` : `${m}:${String(s).padStart(2, "0")}`;
 }
+function fmtElapsed(seconds) {
+  const numeric = finiteValue(seconds);
+  if (numeric == null) return "—";
+  const value = Math.max(0, Math.round(numeric));
+  const h = Math.floor(value / 3600), m = Math.floor((value % 3600) / 60), s = value % 60;
+  return h ? `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}` : `${m}:${String(s).padStart(2, "0")}`;
+}
 function fmtDistance(meters) {
-  if (meters == null || Number.isNaN(+meters)) return "—";
-  const km = meters / 1000;
+  const numeric = finiteValue(meters);
+  if (numeric == null) return "—";
+  const km = numeric / 1000;
   return `${km >= 10 ? km.toFixed(1) : km.toFixed(2)} km`;
 }
-function fmtMeters(meters) { return meters == null ? "—" : `${Math.round(meters)} m`; }
-function fmtSpeed(mps) { return mps == null ? "—" : `${(mps * 3.6).toFixed(1)} km/h`; }
-function fmtWatts(watts) { return watts == null ? "—" : `${Math.round(watts)} W`; }
-function fmtTemp(temp) { return temp == null ? "—" : `${Math.round(temp)}°`; }
-function fmtWind(mps) { return mps == null ? "—" : `${Number(mps).toFixed(1)} m/s`; }
-function fmtMetric(value, unit = "") { return value == null ? "—" : `${value}${unit}`; }
-function fmtKcal(value) { return value == null || Number.isNaN(+value) ? "—" : `${Math.round(+value)} kcal`; }
-function elevationLabel(source) {
-  return ({ lidar: "EA LIDAR", eudem25m: "25 m DEM", terrarium: "30 m DEM", barometer: "Device" }[source] || source || "Unknown");
-}
-function confidenceClass(value) {
-  return value === "confident" || value === "high" ? "pill--green" : value === "context" || value === "med" ? "pill--orange" : "pill--muted";
-}
-function confidenceTag(value, text = value) {
-  if (!value) return "";
-  return `<span class="pill ${confidenceClass(value)}">${esc(text)}</span>`;
+function fmtMeters(meters) { const numeric = finiteValue(meters); return numeric == null ? "—" : `${Math.round(numeric)} m`; }
+function fmtSpeed(mps) { const numeric = finiteValue(mps); return numeric == null ? "—" : `${(numeric * 3.6).toFixed(1)} km/h`; }
+function fmtWatts(watts) { const numeric = finiteValue(watts); return numeric == null ? "—" : `${Math.round(numeric)} W`; }
+function fmtTemp(temp) { const numeric = finiteValue(temp); return numeric == null ? "—" : `${Math.round(numeric)}°`; }
+function fmtWind(mps) { const numeric = finiteValue(mps); return numeric == null ? "—" : `${numeric.toFixed(1)} m/s`; }
+function fmtNumber(value, digits = 2) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "";
+  const normalized = Math.abs(number) < 10 ** (-digits - 1) ? 0 : number;
+  return normalized.toFixed(digits).replace(/(\.\d*?[1-9])0+$/, "$1").replace(/\.0+$/, "");
 }
 function recordDisplay(record) {
   if (record.value_display) return record.value_display;
@@ -138,13 +164,11 @@ function recordDisplay(record) {
   if (record.metric === "distance_m") return fmtDistance(value);
   if (["avg_speed_mps", "max_speed_mps"].includes(record.metric)) return fmtSpeed(value);
   if (["avg_watts"].includes(record.metric)) return fmtWatts(value);
-  if (record.metric === "vo2max") return `${Number(value).toFixed(1)} ml/kg/min`;
+  if (record.metric === "vo2max") {
+    const numeric = finiteValue(value);
+    return numeric == null ? "—" : `${numeric.toFixed(1)} ml/kg/min`;
+  }
   return fmtMeters(value);
-}
-function rideTitle(ride, route) {
-  if (route?.name) return route.name;
-  if (ride?.started_at) return `${new Date(ride.started_at * 1000).toLocaleDateString(undefined, { weekday: "long" })} ride`;
-  return "Ride analysis";
 }
 
 /* ------------------------------------------------------------------ icons */
@@ -152,16 +176,19 @@ function rideTitle(ride, route) {
 function icon(name, className = "") {
   return `<svg class="${className}" aria-hidden="true"><use href="#i-${name}"></use></svg>`;
 }
+function pageHeader(title, action = "") {
+  return `<div class="page-head"><div class="page-head__copy"><h1>${esc(title)}</h1></div>${action ? `<div class="page-head__actions">${action}</div>` : ""}</div>`;
+}
 function emptyState(title, message, action = "") {
-  return `<div class="empty-state"><h2>${esc(title)}</h2><p>${esc(message)}</p>${action}</div>`;
+  return `<div class="empty-state"><div class="empty-state__mark" aria-hidden="true">${icon("activity")}</div><h2>${esc(title)}</h2><p>${esc(message)}</p>${action}</div>`;
 }
-function errorState(title, message) {
-  return `<div class="error-state"><strong>${esc(title)}</strong><p>${esc(message)}</p></div>`;
+function retryAction(label = "Try again", overviewKey = "") {
+  const retryAttribute = overviewKey ? `data-retry-overview="${esc(overviewKey)}"` : "data-retry-page";
+  return `<button type="button" class="button button--quiet button--small" ${retryAttribute}>${esc(label)}</button>`;
 }
-function loadingPage() {
-  return `<div class="skeleton skeleton--hero"></div><div class="summary-strip" aria-hidden="true"><div class="skeleton" style="height:105px"></div><div class="skeleton" style="height:105px"></div><div class="skeleton" style="height:105px"></div><div class="skeleton" style="height:105px"></div></div><div class="skeleton skeleton--chart mt-24"></div>`;
+function errorState(title, message, action = "") {
+  return `<div class="error-state" role="alert"><div class="error-state__mark" aria-hidden="true">!</div><div class="error-state__body"><strong>${esc(title)}</strong><p>${esc(message)}</p>${action}</div></div>`;
 }
-
 /* ------------------------------------------------------------------ layout */
 
 function currentRoute() {
@@ -171,7 +198,13 @@ function currentRoute() {
 
 function startPage() {
   state.pageToken += 1;
+  state.abortController?.abort();
+  state.abortController = new AbortController();
   stopPlayback();
+  if (state.jobPoller) clearInterval(state.jobPoller);
+  state.jobPoller = null;
+  state.jobPollerIds.clear();
+  state.jobStatusSignature = "";
   if (state.map) { state.map.remove(); state.map = null; }
   state.charts.forEach((chart) => { try { chart.destroy?.(); } catch (_) { /* already removed */ } });
   state.charts.clear();
@@ -181,20 +214,36 @@ function startPage() {
   return state.pageToken;
 }
 function pageIsCurrent(token) { return token === state.pageToken; }
+function closeMobileNav() {
+  const menu = $("#mobile-nav"), toggle = $("#mobile-nav-toggle");
+  if (!menu || !toggle) return;
+  menu.hidden = true;
+  toggle.setAttribute("aria-expanded", "false");
+  toggle.innerHTML = `${icon("menu")}<span>Open navigation</span>`;
+}
+function setupMobileNav() {
+  const menu = $("#mobile-nav"), toggle = $("#mobile-nav-toggle");
+  if (!menu || !toggle) return;
+  toggle.addEventListener("click", (event) => {
+    event.stopPropagation();
+    const open = menu.hidden;
+    menu.hidden = !open;
+    toggle.setAttribute("aria-expanded", String(open));
+    toggle.innerHTML = `${icon(open ? "close" : "menu")}<span>${open ? "Close navigation" : "Open navigation"}</span>`;
+  });
+  menu.addEventListener("click", () => closeMobileNav());
+  document.addEventListener("keydown", (event) => { if (event.key === "Escape") closeMobileNav(); });
+  document.addEventListener("click", (event) => {
+    if (!menu.hidden && !menu.contains(event.target) && !toggle.contains(event.target)) closeMobileNav();
+  });
+}
 function setHeader(name) {
   const navName = name === "ride" ? "rides" : name === "route" ? "routes" : name;
-  $$(".primary-nav a").forEach((link) => {
+  $$(".primary-nav a, .mobile-nav a").forEach((link) => {
     const active = link.dataset.nav === navName;
     link.classList.toggle("active", active);
     if (active) link.setAttribute("aria-current", "page"); else link.removeAttribute("aria-current");
   });
-  /* One global primary per view: the Import action lives in the app bar on the
-     hub pages only; task, form, and detail pages keep their own primary. */
-  const actions = $("#topbar-actions");
-  const status = actions.querySelector(".engine-status")?.outerHTML || `<span class="engine-status"><i class="status-dot"></i><span>Local engine</span></span>`;
-  actions.innerHTML = ["dashboard", "rides", "records", "routes"].includes(name)
-    ? `${status}<a class="button button--primary button--small" href="#/import" aria-label="Import ride">${icon("plus")}<span>Import ride</span></a>`
-    : status;
 }
 
 let lastFocusedHeading = null;
@@ -211,6 +260,9 @@ function focusPageHeading() {
 
 function navigate() {
   const { name, param } = currentRoute();
+  const pageNames = { dashboard: "Overview", rides: "Rides", routes: "Routes", route: "Route comparison", ride: "Ride analysis", records: "Records", import: "Import rides", profile: "Profile & bike" };
+  document.title = `${pageNames[name] || "Overview"} · VeloTrack`;
+  closeMobileNav();
   setHeader(name);
   lastFocusedHeading = null;
   const token = startPage();
@@ -253,7 +305,6 @@ const GRAPH_FORMATS = {
   speed: (value) => `${Number(value).toFixed(1)} km/h`,
   percent: (value) => `${Number(value).toFixed(1)}%`,
   meters: (value) => `${Math.round(value)} m`,
-  minutes: (value) => `${Number(value).toFixed(Number(value) < 10 ? 1 : 0)} min`,
   decimal: (value) => Number(value).toFixed(1),
   integer: (value) => `${Math.round(value)}`,
 };
@@ -322,7 +373,7 @@ function graphQuantile(values, fraction) {
   return sorted[lower] + (sorted[upper] - sorted[lower]) * (position - lower);
 }
 function graphAxisDomain(series, axis, options = {}) {
-  const config = typeof options === "boolean" ? { includeZero: options } : (options || {});
+  const config = options || {};
   const values = [];
   series.filter((item) => (item.axis || "left") === axis).forEach((item) => {
     (item.values || []).forEach((value) => { if (finiteGraphValue(value)) values.push(Number(value)); });
@@ -353,7 +404,6 @@ function graphAxisDomain(series, axis, options = {}) {
   const ticks = graphNiceTicks(min, max, config.ticks || 5);
   return { min: ticks[0], max: ticks[ticks.length - 1], ticks };
 }
-function graphEsc(value) { return esc(value); }
 function graphXLabel(value, xSpec, min, max) {
   if (xSpec.type === "category") return String(xSpec.labels?.[Number(value)] ?? "");
   if (xSpec.type === "time") {
@@ -504,7 +554,7 @@ function renderGraph(target, spec) {
     },
   };
   state.charts.set(el.id, graph);
-  el.innerHTML = `<div class="graph-shell"><svg class="graph-svg" role="img" aria-label="${graphEsc(spec.ariaLabel || "Interactive graph")}" preserveAspectRatio="none"></svg><div class="graph-legend" aria-hidden="true"></div><div class="graph-tooltip" hidden></div></div>`;
+  el.innerHTML = `<div class="graph-shell"><svg class="graph-svg" role="img" aria-label="${esc(spec.ariaLabel || "Interactive graph")}" preserveAspectRatio="none"></svg><div class="graph-legend" aria-hidden="true"></div><div class="graph-tooltip" hidden></div></div>`;
   graph.tooltip = $(".graph-tooltip", el);
   graph.legendEl = $(".graph-legend", el);
   const svg = $(".graph-svg", el);
@@ -532,10 +582,10 @@ function renderGraph(target, spec) {
     const leftWidest = leftAxis.ticks.reduce((widest, tick) => Math.max(widest, graphTextWidth(graphFormat(tick, spec.y?.format))), 0);
     const rightWidest = rightAxis ? rightAxis.ticks.reduce((widest, tick) => Math.max(widest, graphTextWidth(graphFormat(tick, spec.yRight?.format))), 0) : 0;
     const margin = {
-      left: Math.max(56, (spec.y?.label ? 20 : 4) + 14 + leftWidest),
-      right: rightAxis ? Math.max(50, rightWidest + 32) : 14,
+      left: Math.max(46, leftWidest + 12),
+      right: rightAxis ? Math.max(38, rightWidest + 14) : 14,
       top: legendItems.length ? 42 : 14,
-      bottom: xSpec.label ? 42 : 27,
+      bottom: 27,
     };
     const yLabelX = margin.left - 12;
     const rightLabelX = width - margin.right + 12;
@@ -560,8 +610,27 @@ function renderGraph(target, spec) {
     graph._xToPx = (value) => xToPx(value, valueIndex.get(graphNumber(value)) ?? 0);
     graph._nearestIndex = (px) => {
       let nearest = 0, distance = Infinity;
-      spec.x.values.forEach((value, index) => { const delta = Math.abs(xToPx(value, index) - px); if (delta < distance) { nearest = index; distance = delta; } });
+      spec.x.values.forEach((value, index) => {
+        if (!category && !finiteGraphValue(value)) return;
+        const delta = Math.abs(xToPx(value, index) - px);
+        if (delta < distance) { nearest = index; distance = delta; }
+      });
       return nearest;
+    };
+    graph._validIndex = (candidate, direction = 1) => {
+      const last = spec.x.values.length - 1;
+      let index = Math.max(0, Math.min(last, Math.round(candidate)));
+      const valid = (value) => category || finiteGraphValue(value);
+      if (valid(spec.x.values[index])) return index;
+      for (let step = 1; step <= last; step += 1) {
+        const next = index + step * direction;
+        if (next >= 0 && next <= last && valid(spec.x.values[next])) return next;
+      }
+      for (let step = 1; step <= last; step += 1) {
+        const next = index - step * direction;
+        if (next >= 0 && next <= last && valid(spec.x.values[next])) return next;
+      }
+      return 0;
     };
     graph._formatTooltip = (index) => {
       const xValue = spec.x.values[index];
@@ -574,16 +643,16 @@ function renderGraph(target, spec) {
         const value = item.values?.[index];
         if (!finiteGraphValue(value)) return "";
         const band = item.band && finiteGraphValue(item.band.lo?.[index]) && finiteGraphValue(item.band.hi?.[index])
-          ? `<span class="graph-tooltip__band">${graphEsc(graphFormat(item.band.lo[index], item.format))} – ${graphEsc(graphFormat(item.band.hi[index], item.format))}</span>` : "";
+          ? `<span class="graph-tooltip__band">${esc(graphFormat(item.band.lo[index], item.format))} – ${esc(graphFormat(item.band.hi[index], item.format))}</span>` : "";
         const marker = Array.isArray(item.pointColors) ? item.pointColors[index] : item.color || GRAPH.green;
-        return `<div class="graph-tooltip__row"><i style="--c:${marker}"></i><span>${graphEsc(item.name || "Value")}</span><b>${graphEsc(graphFormat(value, item.format))}</b>${band}</div>`;
+        return `<div class="graph-tooltip__row"><i style="--c:${marker}"></i><span>${esc(item.name || "Value")}</span><b>${esc(graphFormat(value, item.format))}</b>${band}</div>`;
       }).filter(Boolean).join("");
-      return `<div class="graph-tooltip__head">${graphEsc(head)}</div>${rows}`;
+      return `<div class="graph-tooltip__head">${esc(head)}</div>${rows}`;
     };
 
     const yGrid = leftAxis.ticks.map((tick) => `<line class="graph-grid-line" x1="${margin.left}" x2="${margin.left + plotWidth}" y1="${yToPx(tick)}" y2="${yToPx(tick)}"></line>`).join("");
-    const yLabels = leftAxis.ticks.map((tick) => `<text class="graph-axis-text graph-axis-text--y" x="${yLabelX}" y="${yToPx(tick) + 3.5}">${graphEsc(graphFormat(tick, spec.y?.format))}</text>`).join("");
-    const rightLabels = rightAxis ? rightAxis.ticks.map((tick) => `<text class="graph-axis-text graph-axis-text--right" x="${rightLabelX}" y="${yToPx(tick, "right") + 3.5}">${graphEsc(graphFormat(tick, spec.yRight?.format))}</text>`).join("") : "";
+    const yLabels = leftAxis.ticks.map((tick) => `<text class="graph-axis-text graph-axis-text--y" x="${yLabelX}" y="${yToPx(tick) + 3.5}">${esc(graphFormat(tick, spec.y?.format))}</text>`).join("");
+    const rightLabels = rightAxis ? rightAxis.ticks.map((tick) => `<text class="graph-axis-text graph-axis-text--right" x="${rightLabelX}" y="${yToPx(tick, "right") + 3.5}">${esc(graphFormat(tick, spec.yRight?.format))}</text>`).join("") : "";
     let xTicks;
     if (category) {
       const step = Math.max(1, Math.ceil(xRaw.length / 7));
@@ -595,6 +664,20 @@ function renderGraph(target, spec) {
       const rawMin = Math.min(...xRaw), rawMax = Math.max(...xRaw);
       let values = graphTimeTicks(rawMin, rawMax, 6) || graphNiceTicks(rawMin, rawMax, 6).filter((value) => value >= rawMin && value <= rawMax);
       if (values.length < 2) values = [rawMin, rawMax];
+      /* Keep the first and last recorded dates visible even when calendar
+         ticks begin at the next midnight. The collision pass below still
+         removes any endpoint that would make a narrow chart noisy. */
+      values = [...new Set([...values, rawMin, rawMax])].sort((a, b) => a - b);
+      /* Calendar labels intentionally omit clock time on long spans. Remove
+         duplicate labels created by an endpoint landing on the same day as a
+         midnight tick; keeping the earlier tick preserves even spacing. */
+      const seenDates = new Set();
+      values = values.filter((value) => {
+        const label = graphXLabel(value, xSpec, rawMin, rawMax);
+        if (seenDates.has(label)) return false;
+        seenDates.add(label);
+        return true;
+      });
       xTicks = values.map((value) => ({ value, index: 0 }));
     } else if (xRaw.length === 1) {
       xTicks = [{ value: xRaw[0], index: 0 }];
@@ -617,7 +700,7 @@ function renderGraph(target, spec) {
       const left = x - half, right = x + half;
       const keep = left >= lastLabelRight + 8;
       if (keep) lastLabelRight = right;
-      keptTicks.push({ ...tick, x, label, keep });
+      keptTicks.push({ ...tick, x, label, half, keep });
     });
     if (keptTicks.length && !keptTicks[keptTicks.length - 1].keep) {
       const previous = [...keptTicks].reverse().find((item) => item.keep);
@@ -628,7 +711,7 @@ function renderGraph(target, spec) {
       const key = `${Math.round(x)}:${label}`;
       if (!keep || seenXTicks.has(key)) return "";
       seenXTicks.add(key);
-      return `<text class="graph-axis-text graph-axis-text--x" x="${x}" y="${bottom + 20}">${graphEsc(label)}</text>`;
+      return `<text class="graph-axis-text graph-axis-text--x" x="${x}" y="${bottom + 20}">${esc(label)}</text>`;
     }).join("");
 
     const graphId = String(el.id || "chart").replace(/[^a-z0-9_-]/gi, "-");
@@ -647,12 +730,38 @@ function renderGraph(target, spec) {
       const points = (displayIndices.get(item) || []).map((index) => ({ value: spec.x.values[index], index, y: item.values?.[index] })).filter((point) => finiteGraphValue(point.y));
       if (!points.length) return "";
       const positions = points.map((point) => xToPx(point.value, point.index));
-      const gap = positions.length > 1 ? Math.min(...positions.slice(1).map((value, index) => value - positions[index])) : plotWidth / Math.max(1, spec.x.values.length);
-      const barWidth = Math.max(2, Math.min(48, gap * .58));
+      /* Same-day rides share an x coordinate. Measuring the raw positions made
+         their minimum gap zero, collapsing every bar to a 2px hairline. Use
+         distinct positions for the spacing calculation, then offset duplicate
+         samples into a compact cluster so each effort stays readable. */
+      const groups = new Map();
+      positions.forEach((position, pointIndex) => {
+        /* Time bars represent rides, so same-calendar-day samples form one
+           cluster even when their timestamps are a few pixels apart. */
+        const key = xSpec.type === "time"
+          ? new Date(graphNumber(points[pointIndex].value) * 1000).toLocaleDateString()
+          : position.toFixed(3);
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push(pointIndex);
+      });
+      const groupCenters = [...groups.values()].map((group) => group.reduce((sum, index) => sum + positions[index], 0) / group.length).sort((a, b) => a - b);
+      const fallbackGap = plotWidth / Math.max(1, Math.min(spec.x.values.length, 8));
+      const gap = groupCenters.length > 1
+        ? Math.min(...groupCenters.slice(1).map((value, index) => value - groupCenters[index]))
+        : fallbackGap;
+      const maxGroup = Math.max(...[...groups.values()].map((group) => group.length));
+      const barWidth = Math.max(3, Math.min(48, (Math.max(12, gap) * .78 - 2 * (maxGroup - 1)) / maxGroup));
       return points.map((point, pointIndex) => {
+        const key = xSpec.type === "time"
+          ? new Date(graphNumber(point.value) * 1000).toLocaleDateString()
+          : positions[pointIndex].toFixed(3);
+        const group = groups.get(key);
+        const center = group.reduce((sum, index) => sum + positions[index], 0) / group.length;
+        const offset = (group.indexOf(pointIndex) - (group.length - 1) / 2) * (barWidth + 2);
+        const x = center + offset;
         const y = yToPx(point.y, item.axis || "left"), zero = yToPx(0, item.axis || "left");
         const color = Array.isArray(item.pointColors) ? item.pointColors[point.index] : item.color || GRAPH.blue;
-        return `<rect class="graph-bar" style="--i:${pointIndex}" x="${positions[pointIndex] - barWidth / 2}" y="${Math.min(y, zero)}" width="${barWidth}" height="${Math.max(1, Math.abs(zero - y))}" rx="${Math.min(3, barWidth / 2)}" fill="${color}" opacity="${item.opacity ?? .62}"></rect>`;
+        return `<rect class="graph-bar" style="--i:${pointIndex}" x="${x - barWidth / 2}" y="${Math.min(y, zero)}" width="${barWidth}" height="${Math.max(1, Math.abs(zero - y))}" rx="${Math.min(3, barWidth / 2)}" fill="${color}" opacity="${item.opacity ?? .62}"></rect>`;
       }).join("");
     }).join("");
     const lines = spec.series.filter((item) => item.type !== "bar").map((item, seriesIndex) => {
@@ -680,7 +789,7 @@ function renderGraph(target, spec) {
     const animateEntrance = performance.now() - graph._enterStarted < 700 && !window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
     const zeroLines = `${leftAxis.min < 0 && leftAxis.max > 0 ? `<line class="graph-zero-line" x1="${margin.left}" x2="${margin.left + plotWidth}" y1="${yToPx(0)}" y2="${yToPx(0)}"></line>` : ""}${rightAxis && rightAxis.min < 0 && rightAxis.max > 0 ? `<line class="graph-zero-line" x1="${margin.left}" x2="${margin.left + plotWidth}" y1="${yToPx(0, "right")}" y2="${yToPx(0, "right")}"></line>` : ""}`;
     svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
-    svg.innerHTML = `${defs}<g class="graph-grid">${yGrid}</g><g class="graph-axes">${yLabels}${rightLabels}${zeroLines}${xAxis}${xSpec.label ? `<text class="graph-axis-title" x="${margin.left + plotWidth / 2}" y="${height - 5}">${graphEsc(xSpec.label)}</text>` : ""}<text class="graph-axis-title" transform="translate(17 ${margin.top + plotHeight / 2}) rotate(-90)">${graphEsc(spec.y?.label || "")}</text>${spec.yRight?.label ? `<text class="graph-axis-title graph-axis-title--right" transform="translate(${width - 15} ${margin.top + plotHeight / 2}) rotate(90)">${graphEsc(spec.yRight.label)}</text>` : ""}</g><g class="graph-plot${animateEntrance ? " graph-enter" : ""}" clip-path="url(#${clipId})"><g class="graph-areas">${areas}</g><g class="graph-bands">${bands}</g><g class="graph-bars">${bars}</g><g class="graph-lines">${lines}</g></g>${hoverPoints}<line class="graph-hover-line" x1="0" x2="0" y1="${margin.top}" y2="${bottom}" style="display:none"></line><line class="graph-cursor-line" x1="0" x2="0" y1="${margin.top}" y2="${bottom}" style="display:none"></line>${cursorDots}<rect class="graph-hit-area" x="${margin.left}" y="${margin.top}" width="${plotWidth}" height="${plotHeight}" tabindex="0" role="button" aria-roledescription="chart" aria-label="Hover or select ${graphEsc(spec.ariaLabel || "graph")}"></rect>`;
+    svg.innerHTML = `${defs}<g class="graph-grid">${yGrid}</g><g class="graph-axes">${yLabels}${rightLabels}${zeroLines}${xAxis}</g><g class="graph-plot${animateEntrance ? " graph-enter" : ""}" clip-path="url(#${clipId})"><g class="graph-areas">${areas}</g><g class="graph-bands">${bands}</g><g class="graph-bars">${bars}</g><g class="graph-lines">${lines}</g></g>${hoverPoints}<line class="graph-hover-line" x1="0" x2="0" y1="${margin.top}" y2="${bottom}" style="display:none"></line><line class="graph-cursor-line" x1="0" x2="0" y1="${margin.top}" y2="${bottom}" style="display:none"></line>${cursorDots}<rect class="graph-hit-area" x="${margin.left}" y="${margin.top}" width="${plotWidth}" height="${plotHeight}" tabindex="0" role="button" aria-roledescription="chart" aria-label="Hover or select ${esc(spec.ariaLabel || "graph")}"></rect>`;
     if (animateEntrance) {
       $$(".graph-line", svg).forEach((path) => {
         try {
@@ -704,10 +813,11 @@ function renderGraph(target, spec) {
     graph._plotHeight = plotHeight;
     graph._xMin = xMin;
     graph._xMax = xMax;
-    graph.legendEl.innerHTML = legendItems.length ? legendItems.map((item) => `<span class="graph-legend-item"><i style="--c:${item.color || GRAPH.green}"></i>${graphEsc(item.name)}</span>`).join("") : "";
+    graph.legendEl.innerHTML = legendItems.length ? legendItems.map((item) => `<span class="graph-legend-item"><i style="--c:${item.color || GRAPH.green}"></i>${esc(item.name)}</span>`).join("") : "";
     if (graph.cursorX != null) graph.setCursor(graph.cursorX);
 
-    const showIndex = (index) => {
+    const showIndex = (candidate) => {
+      const index = graph._validIndex(candidate);
       graph.hoverIndex = index;
       const x = xToPx(spec.x.values[index], index);
       graph.hoverLine.setAttribute("x1", x); graph.hoverLine.setAttribute("x2", x); graph.hoverLine.style.display = "block";
@@ -730,6 +840,7 @@ function renderGraph(target, spec) {
       graph.tooltip.style.left = `${towardLeft ? Math.max(6, x - 16) : Math.min(x + 16, width - 20)}px`;
       graph.tooltip.style.top = `${anchorY != null ? Math.max(6, Math.min(height - tooltipHeight - 6, anchorY - 10)) : 12}px`;
       graph.tooltip.style.transform = towardLeft ? "translateX(-100%)" : "none";
+      return index;
     };
     graph._showIndex = showIndex;
     const pointerToIndex = (event) => {
@@ -739,7 +850,7 @@ function renderGraph(target, spec) {
     };
     let hoverFrame = null;
     graph.hit.addEventListener("pointermove", (event) => {
-      graph.pinned = false;
+      if (graph.pinned) return;
       if (hoverFrame) return;
       hoverFrame = requestAnimationFrame(() => {
         hoverFrame = null;
@@ -756,7 +867,7 @@ function renderGraph(target, spec) {
     graph.hit.addEventListener("click", (event) => {
       /* Seek to exactly where the pointer is, never to a stale hover index —
          clicking without hovering used to jump to the left edge. */
-      const index = pointerToIndex(event);
+      const index = graph._validIndex(pointerToIndex(event));
       const x = spec.x.values[index];
       graph.pinned = true;
       showIndex(index);
@@ -764,15 +875,15 @@ function renderGraph(target, spec) {
       graph.callbacks.forEach((callback) => callback(graphNumber(x), index));
     });
     graph.hit.addEventListener("keydown", (event) => {
-      let index = graph.hoverIndex ?? 0;
-      if (event.key === "Escape") { graph.pinned = false; graph.tooltip.hidden = true; return; }
-      if (event.key === "ArrowRight" || event.key === "ArrowDown") index = Math.min(spec.x.values.length - 1, index + 1);
-      else if (event.key === "ArrowLeft" || event.key === "ArrowUp") index = Math.max(0, index - 1);
-      else if (event.key === "Home") index = 0;
-      else if (event.key === "End") index = spec.x.values.length - 1;
-      else if (event.key === "Enter" || event.key === " ") { event.preventDefault(); showIndex(index); graph.pinned = true; graph.setCursor(graphNumber(spec.x.values[index])); graph.callbacks.forEach((callback) => callback(graphNumber(spec.x.values[index]), index)); return; }
+      let index = graph._validIndex(graph.hoverIndex ?? 0);
+      if (event.key === "Escape") { graph.pinned = false; graph.tooltip.hidden = true; graph.hoverLine.style.display = "none"; graph.hoverPoints.forEach((point) => { point.style.display = "none"; }); return; }
+      if (event.key === "ArrowRight" || event.key === "ArrowDown") index = graph._validIndex(index + 1, 1);
+      else if (event.key === "ArrowLeft" || event.key === "ArrowUp") index = graph._validIndex(index - 1, -1);
+      else if (event.key === "Home") index = graph._validIndex(0, 1);
+      else if (event.key === "End") index = graph._validIndex(spec.x.values.length - 1, -1);
+      else if (event.key === "Enter" || event.key === " ") { event.preventDefault(); const selected = showIndex(index); graph.pinned = true; graph.setCursor(graphNumber(spec.x.values[selected])); graph.callbacks.forEach((callback) => callback(graphNumber(spec.x.values[selected]), selected)); return; }
       else return;
-      event.preventDefault(); showIndex(index); graph.callbacks.forEach((callback) => callback(graphNumber(spec.x.values[index]), index));
+      event.preventDefault(); const selected = showIndex(index); graph.callbacks.forEach((callback) => callback(graphNumber(spec.x.values[selected]), selected));
     });
   }
 
@@ -811,59 +922,99 @@ function graphEmpty(el, title, message) {
 /* ------------------------------------------------------------------ dashboard */
 
 async function renderDashboard(_, token = startPage()) {
-  view.innerHTML = loadingPage();
+  view.innerHTML = `<div class="skeleton skeleton--hero"></div><div class="summary-strip" aria-hidden="true"><div class="skeleton skeleton--summary"></div><div class="skeleton skeleton--summary"></div><div class="skeleton skeleton--summary"></div><div class="skeleton skeleton--summary"></div></div><div class="skeleton skeleton--chart mt-24"></div>`;
   let data;
-  try { data = await loadOverview(); } catch (error) { if (pageIsCurrent(token)) view.innerHTML = errorState("The studio is offline", error.message); return; }
+  try { data = await loadOverview(); } catch (error) { if (pageIsCurrent(token)) view.innerHTML = errorState("Overview could not load", error.message, retryAction()); return; }
   if (!pageIsCurrent(token)) return;
   state.overview = data;
   const rides = [...(data.rides || [])].sort((a, b) => (b.started_at || 0) - (a.started_at || 0));
   const latest = rides[0];
-  const totalDistance = rides.reduce((sum, ride) => sum + (ride.distance_m || 0), 0);
-  const totalDuration = rides.reduce((sum, ride) => sum + (ride.duration_s || 0), 0);
-  const totalGain = rides.reduce((sum, ride) => sum + (ride.gain_m || 0), 0);
+  const periodAnchor = latest?.started_at || Date.now() / 1000;
+  const periodStart = periodAnchor - 30 * 86400;
+  const recentRides = rides.filter((ride) => (ride.started_at || 0) >= periodStart);
+  const totalDistance = recentRides.reduce((sum, ride) => sum + (ride.distance_m || 0), 0);
+  const totalDuration = recentRides.reduce((sum, ride) => sum + (ride.duration_s || 0), 0);
+  const totalGain = recentRides.reduce((sum, ride) => sum + (ride.gain_m || 0), 0);
   view.innerHTML = `
-    <div class="page-head"><div class="page-head__copy"><h1>Overview</h1></div><div class="page-head__actions">${latest ? `<a class="button button--primary button--small" href="#/ride/${latest.id}">Open latest ride ${icon("arrow-up-right")}</a>` : `<a class="button button--primary button--small" href="#/import">Import your first ride ${icon("arrow-up-right")}</a>`}</div></div>
-    <section class="summary-strip" aria-label="Training totals"><div class="summary-item"><div class="summary-item__label">Rides imported</div><div class="summary-item__value">${rides.length}</div></div><div class="summary-item"><div class="summary-item__label">Distance</div><div class="summary-item__value">${(totalDistance / 1000).toFixed(0)}<small>km</small></div></div><div class="summary-item"><div class="summary-item__label">Time moving</div><div class="summary-item__value">${esc(fmtDuration(totalDuration))}</div></div><div class="summary-item"><div class="summary-item__label">Climbing</div><div class="summary-item__value">${Math.round(totalGain).toLocaleString()}<small>m</small></div><div class="summary-item__note">${esc(latest ? elevationLabel(latest.elevation_source) : "Awaiting a ride")}</div></div></section>
-    <section class="chart-grid"><article class="card chart-card"><div class="card-title"><div><h2>Watts at the same heart rate</h2></div><div id="hr-picker" class="segmented" role="group" aria-label="Choose heart rate"></div></div><div id="watts-hr-chart" class="chart chart--large"></div></article><div class="chart-stack"><article class="card chart-card"><div class="card-title"><div><h2>Fitness &amp; freshness</h2></div></div><div id="fitness-chart" class="chart chart--small"></div></article><article class="card chart-card"><div class="card-title"><div><h2>Cardiac drift</h2></div></div><div id="drift-chart" class="chart chart--small"></div></article></div></section>
-    <section class="chart-grid"><article class="card chart-card"><div class="card-title"><div><h2>Best power over time</h2></div><div id="power-picker" class="segmented" role="group" aria-label="Choose power duration"></div></div><div id="power-trend-chart" class="chart chart--small"></div></article><article class="card chart-card"><div class="card-title"><div><h2>Recent power curves</h2></div></div><div id="power-curves-chart" class="chart chart--small"></div></article></section>
-    <section class="chart-grid"><article class="card chart-card"><div class="card-title"><div><h2>Personal records</h2></div><a class="button button--quiet button--small" href="#/records">View all ${icon("chevron-right")}</a></div><div id="dash-records" class="list-stack"></div></article><article class="card chart-card"><div class="card-title"><div><h2>Routes worth repeating</h2></div><a class="button button--quiet button--small" href="#/routes">All routes ${icon("chevron-right")}</a></div><div id="dash-routes" class="list-stack"></div></article></section>`;
+    ${pageHeader("Overview", latest ? `<a class="button button--primary button--small" href="#/ride/${latest.id}">Open latest ride ${icon("arrow-up-right")}</a>` : `<a class="button button--primary button--small" href="#/import">Import your first ride ${icon("arrow-up-right")}</a>`)}
+    <section class="summary-block" aria-labelledby="period-title"><div id="period-title" class="summary-block__label">Last 30 days</div><div class="summary-strip"><div class="summary-item"><div class="summary-item__label">Rides</div><div class="summary-item__value">${recentRides.length}</div></div><div class="summary-item"><div class="summary-item__label">Distance</div><div class="summary-item__value">${(totalDistance / 1000).toFixed(0)}<small>km</small></div></div><div class="summary-item"><div class="summary-item__label">Time</div><div class="summary-item__value">${esc(fmtDuration(totalDuration))}</div></div><div class="summary-item"><div class="summary-item__label">Climbing</div><div class="summary-item__value">${Math.round(totalGain).toLocaleString()}<small>m</small></div></div></div></section>
+    <section class="primary-chart"><article class="card chart-card chart-card--primary"><div class="card-title"><div><h2>Watts at the same heart rate</h2></div><div id="hr-picker" class="segmented" role="group" aria-label="Choose heart rate"></div></div><div id="watts-hr-chart" class="chart chart--large"></div></article></section>
+    <section class="dashboard-lists"><article class="card chart-card"><div class="card-title"><div><h2>Personal records</h2></div><a class="button button--quiet button--small" href="#/records">View all ${icon("chevron-right")}</a></div><div id="dash-records" class="dashboard-records"></div></article></section>
+    <section class="analysis-section" aria-labelledby="analysis-title"><div class="section-heading"><h2 id="analysis-title">Trends</h2></div><div class="analysis-grid"><article class="card chart-card"><div class="card-title"><div><h2>Fitness &amp; freshness</h2></div></div><div id="fitness-chart" class="chart chart--small"></div></article><article class="card chart-card"><div class="card-title"><div><h2>Cardiac drift</h2></div></div><div id="drift-chart" class="chart chart--small"></div></article><article class="card chart-card"><div class="card-title"><div><h2>Best power over time</h2></div><div id="power-picker" class="segmented" role="group" aria-label="Choose power duration"></div></div><div id="power-trend-chart" class="chart chart--small"></div></article><article class="card chart-card"><div class="card-title"><div><h2>Recent power curves</h2></div></div><div id="power-curves-chart" class="chart chart--small"></div></article></div></section>`;
 
-  renderDashboardRecords(data.records || []);
-  renderDashboardRoutes(data.routes || []);
+  renderDashboardRecords(data.records || [], data.failures?.records);
   renderDashboardPlots(data);
 }
 
-function renderDashboardRecords(records) {
-  const el = $("#dash-records");
-  if (!records.length) { el.innerHTML = emptyState("No records yet", "Import a ride and your first best effort will appear here.", `<a class="button button--primary button--small" href="#/import">Import ride</a>`); return; }
-  el.innerHTML = records.slice(0, 6).map((record) => `<div class="list-row"><div class="list-row__main"><strong>${esc(record.label)}</strong><small>${esc(fmtDate(record.started_at))}</small></div><div class="list-row__value">${esc(recordDisplay(record))}</div></div>`).join("");
+function overviewError(el, title, message, key) {
+  if (!el) return;
+  el.innerHTML = errorState(title, message, retryAction("Retry", key));
 }
-function renderDashboardRoutes(routesList) {
-  const el = $("#dash-routes");
-  const repeated = routesList.filter((route) => route.n_rides > 1).sort((a, b) => b.n_rides - a.n_rides).slice(0, 5);
-  if (!repeated.length) { el.innerHTML = emptyState("Routes are waiting", "Ride the same roads twice and the comparison will start to speak.", `<a class="button button--quiet button--small" href="#/import">Import history</a>`); return; }
-  el.innerHTML = repeated.map((route) => `<a class="list-row" href="#/route/${route.id}"><div class="list-row__main"><strong>${esc(route.name)}</strong><small>${esc(fmtDate(route.first_at))} → ${esc(fmtDate(route.last_at))}</small></div><div class="list-row__value"><span class="pill pill--green">×${route.n_rides}</span></div></a>`).join("");
+function renderDashboardRecords(records, failure = null) {
+  const el = $("#dash-records");
+  if (!el) return;
+  if (failure) { overviewError(el, "Records unavailable", "Try again to load personal records.", "records"); return; }
+  if (!records.length) { el.innerHTML = emptyState("No records yet", "Import a ride and your first best effort will appear here.", `<a class="button button--primary button--small" href="#/import">Import ride</a>`); return; }
+  el.innerHTML = records.slice(0, 6).map((record) => `<a class="list-row" href="#/ride/${record.ride_id}" aria-label="Open ride for ${esc(record.label)}"><div class="list-row__main"><strong>${esc(record.label)}</strong><small>${esc(fmtDate(record.started_at))}</small></div><div class="list-row__value">${esc(recordDisplay(record))}${icon("chevron-right")}</div></a>`).join("");
 }
 function renderDashboardPlots(data) {
+  const failures = data.failures || {};
   const watts = data.wattsHr || { fixed_hrs: [], series: {} };
   const hrs = (watts.fixed_hrs || []).map(String);
   let selectedHr = sessionStorage.getItem("velotrack.hr");
   if (!hrs.includes(selectedHr)) selectedHr = hrs.includes("140") ? "140" : hrs[0];
   const hrPicker = $("#hr-picker");
-  hrPicker.innerHTML = hrs.map((hr) => `<button class="${hr === selectedHr ? "active" : ""}" data-value="${esc(hr)}" aria-pressed="${hr === selectedHr}">${esc(hr)} bpm</button>`).join("");
-  $$("button", hrPicker).forEach((button) => button.addEventListener("click", () => { selectedHr = button.dataset.value; sessionStorage.setItem("velotrack.hr", selectedHr); $$("button", hrPicker).forEach((item) => { item.classList.toggle("active", item === button); item.setAttribute("aria-pressed", item === button); }); drawWattsHr(watts, selectedHr); }));
-  drawWattsHr(watts, selectedHr);
-  drawFitness(data.fitness || { points: [] });
-  drawCardiac(data.drift || { points: [] });
+  if (failures.wattsHr) {
+    hrPicker.innerHTML = "";
+    overviewError($("#watts-hr-chart"), "Main trend unavailable", "Try again to load this chart.", "wattsHr");
+  } else {
+    hrPicker.innerHTML = hrs.map((hr) => `<button type="button" class="${hr === selectedHr ? "active" : ""}" data-value="${esc(hr)}" aria-pressed="${hr === selectedHr}">${esc(hr)} bpm</button>`).join("");
+    $$("button", hrPicker).forEach((button) => button.addEventListener("click", () => { selectedHr = button.dataset.value; sessionStorage.setItem("velotrack.hr", selectedHr); $$("button", hrPicker).forEach((item) => { item.classList.toggle("active", item === button); item.setAttribute("aria-pressed", item === button); }); drawWattsHr(watts, selectedHr); }));
+    drawWattsHr(watts, selectedHr);
+  }
+  if (failures.fitness) overviewError($("#fitness-chart"), "Fitness trend unavailable", "Try again to load this chart.", "fitness"); else drawFitness(data.fitness || { points: [] });
+  if (failures.drift) overviewError($("#drift-chart"), "Cardiac drift unavailable", "Try again to load this chart.", "drift"); else drawCardiac(data.drift || { points: [] });
 
+  const powerPicker = $("#power-picker");
+  if (failures.power) {
+    powerPicker.innerHTML = "";
+    overviewError($("#power-trend-chart"), "Power trend unavailable", "Try again to load these charts.", "power");
+    overviewError($("#power-curves-chart"), "Power curves unavailable", "Try again to load these charts.", "power");
+    return;
+  }
   const durations = ["1", "5", "20", "60"].filter((duration) => data.power?.series?.[duration]);
   let selectedDuration = sessionStorage.getItem("velotrack.powerMin");
   if (!durations.includes(selectedDuration)) selectedDuration = durations.includes("5") ? "5" : durations[0];
-  const powerPicker = $("#power-picker");
-  powerPicker.innerHTML = durations.map((duration) => `<button class="${duration === selectedDuration ? "active" : ""}" data-value="${duration}" aria-pressed="${duration === selectedDuration}">${duration} min</button>`).join("");
+  powerPicker.innerHTML = durations.map((duration) => `<button type="button" class="${duration === selectedDuration ? "active" : ""}" data-value="${duration}" aria-pressed="${duration === selectedDuration}">${duration} min</button>`).join("");
   $$("button", powerPicker).forEach((button) => button.addEventListener("click", () => { selectedDuration = button.dataset.value; sessionStorage.setItem("velotrack.powerMin", selectedDuration); $$("button", powerPicker).forEach((item) => { item.classList.toggle("active", item === button); item.setAttribute("aria-pressed", item === button); }); drawPowerTrend(data.power, selectedDuration); }));
   drawPowerTrend(data.power || { series: {} }, selectedDuration);
   drawPowerCurves(data.power || { curves: [] });
+}
+const OVERVIEW_RETRY_ENDPOINTS = {
+  wattsHr: "/api/trends/watts_hr",
+  fitness: "/api/trends/fitness",
+  records: "/api/records",
+  drift: "/api/trends/cardiac",
+  power: "/api/trends/power",
+};
+async function retryOverview(key, button) {
+  const path = OVERVIEW_RETRY_ENDPOINTS[key];
+  if (!path) return;
+  const token = state.pageToken;
+  button.disabled = true;
+  try {
+    const result = await api(path);
+    if (!pageIsCurrent(token)) return;
+    const data = state.overview || {};
+    data[key] = result;
+    data.failures = { ...(data.failures || {}) };
+    delete data.failures[key];
+    state.overview = data;
+    if (key === "records") renderDashboardRecords(data.records || []);
+    else renderDashboardPlots(data);
+  } catch (error) {
+    if (pageIsCurrent(token)) { button.disabled = false; toast(error.message); }
+  }
 }
 function drawWattsHr(data, selected) {
   const el = $("#watts-hr-chart");
@@ -873,10 +1024,10 @@ function drawWattsHr(data, selected) {
   renderGraph(el, {
     ariaLabel: `Watts produced at ${selected} beats per minute over the ride history`,
     x: { values: points.map((point) => point.date), type: "time", label: "ride date" },
-    y: { label: "watts", format: "watts", includeZero: true, robust: true },
+    y: { format: "watts", includeZero: true, robust: true },
     series: [{
       name: `${selected} bpm`, values: points.map((point) => point.watts), color: GRAPH.green, width: 2.6, pointRadius: 4,
-      pointColors: points.map((point) => point.confidence === "confident" ? GRAPH.green : GRAPH.orange), format: "watts",
+      format: "watts",
       band: { lo: points.map((point) => point.lo ?? point.watts), hi: points.map((point) => point.hi ?? point.watts), pattern: true },
     }],
   });
@@ -887,27 +1038,26 @@ function drawFitness(data) {
   if (!el) return;
   if (!points.length) { graphEmpty(el, "Heart rate will build this view", "Import rides with HR data to see fitness and freshness."); return; }
   renderGraph(el, {
-    ariaLabel: "Fitness, fatigue, and freshness over time",
+    ariaLabel: "Fitness, fatigue, and form over time",
     x: { values: points.map((point) => point.date), type: "time", label: "ride date" },
-    y: { label: "load", format: "decimal" },
-    yRight: { label: "form", format: "decimal", includeZero: true },
+    y: { format: "decimal", includeZero: true },
     series: [
-        { name: "Fitness", values: points.map((point) => point.ctl), color: GRAPH.blue, width: 2.4, pointRadius: 3, format: "decimal" },
-        { name: "Fatigue", values: points.map((point) => point.atl), color: GRAPH.orange, width: 1.7, pointRadius: 2.5, format: "decimal" },
-        { name: "Form", values: points.map((point) => point.tsb), type: "bar", axis: "right", pointColors: points.map((point) => point.tsb >= 0 ? GRAPH.green : GRAPH.orange), opacity: .5, format: "decimal" },
-      ],
+      { name: "Fitness", values: points.map((point) => point.ctl), color: GRAPH.blue, width: 2.4, pointRadius: 2.8, curve: false, format: "decimal" },
+      { name: "Fatigue", values: points.map((point) => point.atl), color: GRAPH.orange, width: 2.1, pointRadius: 2.8, curve: false, format: "decimal" },
+      { name: "Form", values: points.map((point) => point.tsb), color: GRAPH.green, width: 2.1, pointRadius: 2.8, curve: false, format: "decimal" },
+    ],
   });
 }
 function drawCardiac(data) {
   const el = $("#drift-chart");
   const points = data.points || [];
   if (!el) return;
-  if (!points.length) { graphEmpty(el, "No steady window yet", "Drift stays quiet when estimated effort is too variable to interpret."); return; }
+  if (!points.length) { graphEmpty(el, "No steady window yet", "Drift stays quiet when the effort is too variable to interpret."); return; }
   renderGraph(el, {
     ariaLabel: "Cardiac drift by ride",
     x: { values: points.map((point) => point.date), type: "time", label: "ride date" },
-    y: { label: "bpm / hour", format: "decimal", includeZero: true },
-    series: [{ name: "Cardiac drift", values: points.map((point) => point.drift_bpm_per_hr), type: "bar", pointColors: points.map((point) => point.drift_bpm_per_hr >= 0 ? GRAPH.orange : GRAPH.green), opacity: .82, format: (value) => `${Number(value).toFixed(1)} bpm/hr` }],
+    y: { format: "decimal", includeZero: true },
+    series: [{ name: "Cardiac drift", values: points.map((point) => point.drift_bpm_per_hr), color: GRAPH.orange, pointColors: points.map((point) => point.drift_bpm_per_hr >= 0 ? GRAPH.orange : GRAPH.green), width: 2.2, pointRadius: 3.5, format: (value) => `${Number(value).toFixed(1)} bpm/hr` }],
   });
 }
 function drawPowerTrend(data, duration) {
@@ -916,9 +1066,9 @@ function drawPowerTrend(data, duration) {
   const points = data.series?.[duration] || [];
   if (!points.length) { graphEmpty(el, "Power trends need more rides", "Best sustained power appears here once a few rides are imported."); return; }
   renderGraph(el, {
-    ariaLabel: `Best estimated power for ${duration} minutes over time`,
+    ariaLabel: `Best power for ${duration} ${Number(duration) === 1 ? "minute" : "minutes"} over time`,
     x: { values: points.map((point) => point.date), type: "time", label: "ride date" },
-    y: { label: "watts", format: "watts", includeZero: true, robust: true },
+    y: { format: "watts", includeZero: true, robust: true },
     series: [{
       name: `best ${duration} min`, values: points.map((point) => point.watts), color: GRAPH.orange, width: 2.5, pointRadius: 3.5, format: "watts",
       band: { lo: points.map((point) => point.lo ?? point.watts), hi: points.map((point) => point.hi ?? point.watts), pattern: true },
@@ -937,9 +1087,9 @@ function drawPowerCurves(data) {
     return { name: fmtDate(curve.date), values: xValues.map((minute) => byMinute[minute]), color: newest ? GRAPH.green : hexToRgba(GRAPH.blue, .25 + index / Math.max(curves.length, 2) * .45), width: newest ? 2.8 : 1.35, pointRadius: newest ? 3.5 : 2, format: "watts" };
   });
   renderGraph(el, {
-    ariaLabel: "Estimated power duration curves for recent rides",
+    ariaLabel: "Power duration curves for recent rides",
     x: { values: xValues, type: "log", ticks: [1, 2, 5, 10, 20, 60], label: "minutes" },
-    y: { label: "watts", format: "watts", includeZero: true },
+    y: { format: "watts", includeZero: true },
     series,
   });
 }
@@ -947,21 +1097,20 @@ function drawPowerCurves(data) {
 /* ------------------------------------------------------------------ rides */
 
 async function renderRides(_, token = startPage()) {
-  view.innerHTML = `    <div class="page-head"><div class="page-head__copy"><h1>Rides</h1></div></div><div class="skeleton skeleton--card"></div>`;
-  let rides, routesList;
-  try { [rides, routesList] = await Promise.all([api("/api/rides"), api("/api/routes")]); } catch (error) { if (pageIsCurrent(token)) view.innerHTML = errorState("Rides could not load", error.message); return; }
+  view.innerHTML = `<div class="skeleton skeleton--card"></div>`;
+  let rides;
+  try { rides = await api("/api/rides"); } catch (error) { if (pageIsCurrent(token)) view.innerHTML = errorState("Rides could not load", error.message, retryAction()); return; }
   if (!pageIsCurrent(token)) return;
   const sorted = [...rides].sort((a, b) => (b.started_at || 0) - (a.started_at || 0));
-  const routeMap = Object.fromEntries((routesList || []).map((route) => [route.id, route]));
-  view.innerHTML = `    <div class="page-head"><div class="page-head__copy"><h1>Rides</h1></div></div>${sorted.length ? `<section class="card ride-list-card"><div class="card-title"><div><h2>Ride history</h2></div></div><div class="toolbar"><label class="search-field">${icon("search")}<input id="ride-search" type="search" placeholder="Search filename or route" aria-label="Search rides"></label><select id="ride-sort" class="filter-select" aria-label="Sort rides"><option value="newest">Newest first</option><option value="oldest">Oldest first</option><option value="distance">Longest distance</option><option value="climb">Most climbing</option></select></div><div id="ride-table-wrap"></div></section>` : emptyState("Your ride library is empty", "Import a Wahoo .FIT file to see the terrain, load, and honest power estimate together.", `<a class="button button--primary button--small" href="#/import">Import first ride</a>`)}`;
+  view.innerHTML = `    ${pageHeader("Rides")}${sorted.length ? `<section class="card ride-list-card"><div class="card-title"><div><h2>Ride history</h2></div></div><div class="toolbar"><label class="search-field">${icon("search")}<input id="ride-search" type="search" placeholder="Search ride files" aria-label="Search rides"></label><select id="ride-sort" class="filter-select" aria-label="Sort rides"><option value="newest">Newest first</option><option value="oldest">Oldest first</option><option value="distance">Longest distance</option><option value="climb">Most climbing</option></select></div><div id="ride-table-wrap"></div></section>` : emptyState("Your ride library is empty", "Import a Wahoo .FIT file to start your history.", `<a class="button button--primary button--small" href="#/import">Import first ride</a>`)}`;
   const search = $("#ride-search"), sort = $("#ride-sort"), table = $("#ride-table-wrap");
   function drawRows() {
     const query = search.value.trim().toLowerCase();
     const mode = sort.value;
-    const rows = sorted.filter((ride) => `${ride.filename || ""} ${routeMap[ride.route_id]?.name || ""}`.toLowerCase().includes(query)).sort((a, b) => mode === "oldest" ? a.started_at - b.started_at : mode === "distance" ? (b.distance_m || 0) - (a.distance_m || 0) : mode === "climb" ? (b.gain_m || 0) - (a.gain_m || 0) : b.started_at - a.started_at);
-    if (!rows.length) { table.innerHTML = emptyState("No rides match", "Try a different filename, route, or sort."); return; }
-    table.innerHTML = `<div class="table-scroll"><table class="ride-table ride-table--cards"><thead><tr><th>Date</th><th class="num">Distance</th><th class="num">Time</th><th class="num">Climb</th><th class="num">Avg HR</th><th class="num">Est. power</th><th class="num">Calories</th><th>Elevation</th><th>Route</th></tr></thead><tbody>${rows.map((ride) => { const route = routeMap[ride.route_id]; return `<tr tabindex="0" data-ride="${ride.id}" aria-label="Open ${esc(ride.filename || "ride")}"><td class="mono" data-label="Date">${esc(fmtDateTime(ride.started_at))}</td><td class="num" data-label="Distance">${esc(fmtDistance(ride.distance_m))}</td><td class="num" data-label="Time">${esc(fmtDuration(ride.duration_s))}</td><td class="num" data-label="Climb">${esc(fmtMeters(ride.gain_m))}</td><td class="num" data-label="Avg HR">${ride.avg_hr ? `${Math.round(ride.avg_hr)} bpm` : "—"}</td><td class="num" data-label="Est. power">${esc(fmtWatts(ride.avg_watts))}</td><td class="num" data-label="Calories">${ride.calories_kcal ? esc(fmtKcal(ride.calories_kcal)) : "—"}</td><td data-label="Elevation">${confidenceTag(ride.elevation_source === "lidar" ? "high" : ride.elevation_source === "eudem25m" ? "context" : "low", elevationLabel(ride.elevation_source))}</td><td data-label="Route">${route ? `<a class="pill ${route.n_rides > 1 ? "pill--green" : "pill--muted"} route-link" href="#/route/${route.id}" title="${esc(route.name)}">×${route.n_rides}</a>` : "—"}</td></tr>`; }).join("")}</tbody></table></div>`;
-    $$('[data-ride]', table).forEach((row) => { const go = () => { if (!location.hash.includes(`/ride/${row.dataset.ride}`)) location.hash = `#/ride/${row.dataset.ride}`; }; row.addEventListener("click", (event) => { if (!event.target.closest(".route-link")) go(); }); row.addEventListener("keydown", (event) => { if ((event.key === "Enter" || event.key === " ") && !event.target.closest(".route-link")) { event.preventDefault(); go(); } }); });
+    const rows = sorted.filter((ride) => `${ride.filename || ""} ${fmtDateTime(ride.started_at)}`.toLowerCase().includes(query)).sort((a, b) => mode === "oldest" ? a.started_at - b.started_at : mode === "distance" ? (b.distance_m || 0) - (a.distance_m || 0) : mode === "climb" ? (b.gain_m || 0) - (a.gain_m || 0) : b.started_at - a.started_at);
+    if (!rows.length) { table.innerHTML = emptyState("No rides match", "Try a different filename, date, or sort."); return; }
+    table.innerHTML = `<div class="table-scroll"><table class="ride-table"><thead><tr><th>Date</th><th class="num">Distance</th><th class="num">Time</th><th class="num">Climb</th><th class="num">Power</th></tr></thead><tbody>${rows.map((ride) => `<tr tabindex="0" data-ride="${ride.id}" aria-label="Open ${esc(ride.filename || "ride")}"><td class="mono">${esc(fmtDateTime(ride.started_at))}</td><td class="num">${esc(fmtDistance(ride.distance_m))}</td><td class="num">${esc(fmtDuration(ride.duration_s))}</td><td class="num">${esc(fmtMeters(ride.gain_m))}</td><td class="num">${esc(fmtWatts(ride.avg_watts))}</td></tr>`).join("")}</tbody></table></div>`;
+    $$('[data-ride]', table).forEach((row) => { const go = () => { if (!location.hash.includes(`/ride/${row.dataset.ride}`)) location.hash = `#/ride/${row.dataset.ride}`; }; row.addEventListener("click", go); row.addEventListener("keydown", (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); go(); } }); });
   }
   search.addEventListener("input", drawRows); sort.addEventListener("change", drawRows); drawRows();
 }
@@ -969,11 +1118,17 @@ async function renderRides(_, token = startPage()) {
 /* ------------------------------------------------------------------ import */
 
 function renderImport(_, token = startPage()) {
-  view.innerHTML = `    <div class="page-head"><div class="page-head__copy"><h1>Import rides</h1></div></div><section class="import-layout"><div class="card card-pad"><div id="dropzone" class="dropzone" role="button" tabindex="0" aria-label="Choose FIT files"><div class="dropzone__content"><div class="upload-mark">${icon("upload")}</div><h2>Drop .fit files here</h2><p>Or click to browse. Multiple files are welcome.</p></div></div><input id="file-input" type="file" accept=".fit" multiple hidden></div></section><section class="card queue-card"><div class="card-title"><div><h2>Import queue</h2></div></div><div id="jobs"></div></section>`;
+  view.innerHTML = `    ${pageHeader("Import rides")}<section class="import-layout"><div class="card card-pad import-card"><div id="dropzone" class="dropzone" role="button" tabindex="0" aria-describedby="dropzone-help"><div class="dropzone__content"><div class="upload-mark">${icon("upload")}</div><h2>Select FIT files</h2><p id="dropzone-help">Drop files here or click to browse.</p><span class="dropzone__format">FIT files only</span></div></div><input id="file-input" type="file" accept=".fit" multiple hidden aria-label="Choose FIT files"></div></section><section id="queue-card" class="card queue-card" hidden><div class="card-title"><h2>Import queue</h2><span id="queue-count" class="pill pill--muted">Waiting</span></div><div id="jobs"></div><div id="queue-status" class="visually-hidden" role="status" aria-live="polite"></div></section>`;
   const dropzone = $("#dropzone"), input = $("#file-input");
-  const choose = () => input.click();
-  dropzone.addEventListener("click", choose); dropzone.addEventListener("keydown", (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); choose(); } });
-  dropzone.addEventListener("dragover", (event) => { event.preventDefault(); dropzone.classList.add("drag"); }); dropzone.addEventListener("dragleave", () => dropzone.classList.remove("drag")); dropzone.addEventListener("drop", (event) => { event.preventDefault(); dropzone.classList.remove("drag"); handleFiles(event.dataTransfer.files, token); }); input.addEventListener("change", () => handleFiles(input.files, token));
+  const choose = () => { input.value = ""; input.click(); };
+  let dragDepth = 0;
+  dropzone.addEventListener("click", choose);
+  dropzone.addEventListener("keydown", (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); choose(); } });
+  dropzone.addEventListener("dragenter", (event) => { event.preventDefault(); dragDepth += 1; dropzone.classList.add("drag"); });
+  dropzone.addEventListener("dragover", (event) => { event.preventDefault(); });
+  dropzone.addEventListener("dragleave", (event) => { event.preventDefault(); dragDepth = Math.max(0, dragDepth - 1); if (!dragDepth) dropzone.classList.remove("drag"); });
+  dropzone.addEventListener("drop", (event) => { event.preventDefault(); dragDepth = 0; dropzone.classList.remove("drag"); handleFiles(event.dataTransfer.files, token); });
+  input.addEventListener("change", () => { handleFiles(input.files, token).finally(() => { input.value = ""; }); });
   loadJobs(token);
 }
 
@@ -981,56 +1136,112 @@ async function handleFiles(fileList, token) {
   const files = [];
   for (const file of fileList || []) {
     if (!file.name.toLowerCase().endsWith(".fit")) continue;
-    const bytes = new Uint8Array(await file.arrayBuffer());
-    let binary = "";
-    for (let offset = 0; offset < bytes.length; offset += 0x8000) binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
-    files.push({ name: file.name, data: btoa(binary) });
+    try {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      let binary = "";
+      for (let offset = 0; offset < bytes.length; offset += 0x8000) binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
+      files.push({ name: file.name, data: btoa(binary) });
+    } catch (_) {
+      toast(`Could not read ${file.name}.`);
+    }
   }
   if (!files.length) { toast("Choose one or more .FIT files."); return; }
-  try { const result = await api("/api/import", { method: "POST", body: { files } }); toast(`Queued ${result.jobs.length} ride${result.jobs.length === 1 ? "" : "s"}.`); pollJobs(result.jobs, token); } catch (error) { toast(error.message); }
+  try { const result = await api("/api/import", { method: "POST", body: { files } }); if (!pageIsCurrent(token)) return; const jobs = Array.isArray(result.jobs) ? result.jobs : []; if (!jobs.length) { toast("No rides were queued. Check the FIT files."); return; } toast(`Queued ${jobs.length} ride${jobs.length === 1 ? "" : "s"}.`); pollJobs(jobs, token); } catch (error) { if (pageIsCurrent(token)) toast(error.message); }
 }
 function renderJobs(jobs) {
-  const el = $("#jobs"); if (!el) return;
-  if (!jobs.length) { el.innerHTML = emptyState("Nothing in the queue", "Drop a FIT file above and the engine will keep you posted."); return; }
-  el.innerHTML = jobs.map((job) => `<div class="job"><div class="job__name">${esc(job.filename || job.id)}</div><div class="job__status">${esc(job.status)}</div>${job.status === "running" ? `<div class="progress"><i style="transform:scaleX(${(Math.max(0, Math.min(1, (job.progress || 0) / 100))).toFixed(3)})"></i></div>` : ""}${job.message ? `<div class="job__message">${esc(job.message)}</div>` : ""}${job.error ? `<div class="job__error">${esc(job.error)}</div>` : ""}${job.status === "done" && job.result ? `<div class="job__message">${esc(fmtDistance(job.result.distance_m))} · ${esc(fmtMeters(job.result.gain_m))} · ${esc(fmtWatts(job.result.avg_watts))}</div>` : ""}</div>`).join("");
+  const el = $("#jobs"), queueCard = $("#queue-card"); if (!el) return;
+  if (queueCard) queueCard.hidden = !jobs.length;
+  const count = $("#queue-count");
+  if (count) {
+    const live = jobs.filter((job) => !["done", "error", "duplicate"].includes(job.status)).length;
+    count.textContent = live ? `${live} active` : jobs.length ? `${jobs.length} complete` : "Waiting";
+    count.className = `pill ${live ? "pill--orange" : "pill--muted"}`;
+  }
+  if (!jobs.length) { el.innerHTML = ""; return; }
+  const signature = jobs.map((job) => `${job.id}:${job.status}`).join("|");
+  const status = $("#queue-status");
+  if (status && signature !== state.jobStatusSignature) {
+    const active = jobs.filter((job) => !["done", "error", "duplicate"].includes(job.status)).length;
+    status.textContent = active ? `${active} import${active === 1 ? "" : "s"} in progress` : jobs.length ? "Import queue complete" : "";
+    state.jobStatusSignature = signature;
+  }
+  const statusLabel = { queued: "Queued", running: "Importing", done: "Complete", error: "Failed", duplicate: "Already imported", unknown: "Unavailable" };
+  el.innerHTML = jobs.map((job) => `<div class="job job--${esc(job.status)}"><div class="job__name" title="${esc(job.filename || job.id)}">${esc(job.filename || job.id)}</div><div class="job__status"><i class="job__status-dot"></i>${esc(statusLabel[job.status] || job.status)}</div>${job.status === "running" ? `<div class="progress" role="progressbar" aria-label="Import progress for ${esc(job.filename || job.id)}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(job.progress || 0)}"><i style="transform:scaleX(${(Math.max(0, Math.min(1, (job.progress || 0) / 100))).toFixed(3)})"></i></div>` : ""}${job.message ? `<div class="job__message">${esc(job.message)}</div>` : ""}${job.error ? `<div class="job__error">${esc(job.error)}</div>` : ""}${job.status === "done" && job.result ? `<div class="job__message">${esc(fmtDistance(job.result.distance_m))} · ${esc(fmtMeters(job.result.gain_m))} · ${esc(fmtWatts(job.result.avg_watts))}</div>` : ""}</div>`).join("");
 }
-async function loadJobs(token) { try { const jobs = await api("/api/jobs"); if (pageIsCurrent(token)) { renderJobs(jobs.slice().reverse()); const live = jobs.filter((job) => !["done", "error", "duplicate"].includes(job.status)).map((job) => job.id); if (live.length) pollJobs(live, token); } } catch (_) { /* engine health is shown in shell */ } }
+async function loadJobs(token) {
+  try {
+    const jobs = await api("/api/jobs");
+    if (pageIsCurrent(token)) {
+      renderJobs(jobs.slice().reverse());
+      const live = jobs.filter((job) => !["done", "error", "duplicate"].includes(job.status)).map((job) => job.id);
+      if (live.length) pollJobs(live, token);
+    }
+  } catch (error) {
+    if (pageIsCurrent(token)) {
+      const jobs = $("#jobs"), queueCard = $("#queue-card");
+      if (queueCard) queueCard.hidden = false;
+      if (jobs) jobs.innerHTML = errorState("Import queue unavailable", error.message, retryAction());
+    }
+  }
+}
 function pollJobs(ids, token) {
-  const timers = {};
-  ids.forEach((id) => { timers[id] = setInterval(async () => { try { const job = await api(`/api/import/status/${id}`); const jobs = await api("/api/jobs"); if (pageIsCurrent(token)) renderJobs(jobs.filter((item) => ids.includes(item.id)).reverse()); if (["done", "error", "duplicate"].includes(job.status)) { clearInterval(timers[id]); updateEngineStatus(); if (job.status === "done") toast(`${job.filename || "Ride"} imported.`); } } catch (_) { /* server may be restarting */ } }, 700); });
+  ids.forEach((id) => state.jobPollerIds.add(id));
+  if (state.jobPoller) return;
+  const tick = async () => {
+    if (!pageIsCurrent(token) || !state.jobPollerIds.size) {
+      if (state.jobPoller) clearInterval(state.jobPoller);
+      state.jobPoller = null;
+      return;
+    }
+    try {
+      const jobs = await api("/api/jobs");
+      const visible = jobs.filter((job) => state.jobPollerIds.has(job.id));
+      if (pageIsCurrent(token)) renderJobs(visible.slice().reverse());
+      visible.filter((job) => ["done", "error", "duplicate"].includes(job.status)).forEach((job) => {
+        state.jobPollerIds.delete(job.id);
+        if (job.status === "done") toast(`${job.filename || "Ride"} imported.`);
+      });
+    } catch (_) { /* server may be restarting */ }
+    if (!state.jobPollerIds.size && state.jobPoller) {
+      clearInterval(state.jobPoller);
+      state.jobPoller = null;
+    }
+  };
+  state.jobPoller = setInterval(tick, 800);
+  tick();
 }
 
 /* ------------------------------------------------------------------ records */
 
 async function renderRecords(_, token = startPage()) {
-  view.innerHTML = `    <div class="page-head"><div class="page-head__copy"><h1>Records</h1></div></div><div class="skeleton skeleton--card"></div>`;
+  view.innerHTML = `<div class="skeleton skeleton--card"></div>`;
   let records;
-  try { records = await api("/api/records"); } catch (error) { if (pageIsCurrent(token)) view.innerHTML = errorState("Records could not load", error.message); return; }
+  try { records = await api("/api/records"); } catch (error) { if (pageIsCurrent(token)) view.innerHTML = errorState("Records could not load", error.message, retryAction()); return; }
   if (!pageIsCurrent(token)) return;
-  view.innerHTML = `    <div class="page-head"><div class="page-head__copy"><h1>Records</h1></div></div>${records.length ? `<section class="record-grid">${records.map((record) => { const estimated = record.metric === "avg_watts" || record.metric === "vo2max"; return `<a class="card record-card" href="#/ride/${record.ride_id}"><div class="record-card__label">${esc(record.label)}</div><div class="record-card__value">${esc(recordDisplay(record))}</div><div class="record-card__foot"><span class="record-card__date">${esc(fmtDate(record.started_at))}</span>${confidenceTag(estimated ? "context" : "high", estimated ? "estimated" : "measured")}</div></a>`; }).join("")}</section>` : emptyState("Your record board is blank", "Import your first ride and the best work will be called out here.", `<a class="button button--primary button--small" href="#/import">Import first ride</a>`)} `;
+  view.innerHTML = `    ${pageHeader("Records")}${records.length ? `<section class="record-grid">${records.map((record) => `<a class="card record-card" href="#/ride/${record.ride_id}"><div class="record-card__label">${esc(record.label)}</div><div class="record-card__value">${esc(recordDisplay(record))}</div><div class="record-card__foot"><span class="record-card__date">${esc(fmtDate(record.started_at))}</span></div></a>`).join("")}</section>` : emptyState("Your record board is blank", "Import your first ride and the best work will be called out here.", `<a class="button button--primary button--small" href="#/import">Import first ride</a>`)} `;
 }
 
 /* ------------------------------------------------------------------ routes */
 
 async function renderRoutes(_, token = startPage()) {
-  view.innerHTML = `    <div class="page-head"><div class="page-head__copy"><h1>Routes</h1></div></div><div class="skeleton skeleton--card"></div>`;
+  view.innerHTML = `<div class="skeleton skeleton--card"></div>`;
   let routesList;
-  try { routesList = await api("/api/routes"); } catch (error) { if (pageIsCurrent(token)) view.innerHTML = errorState("Routes could not load", error.message); return; }
+  try { routesList = await api("/api/routes"); } catch (error) { if (pageIsCurrent(token)) view.innerHTML = errorState("Routes could not load", error.message, retryAction()); return; }
   if (!pageIsCurrent(token)) return;
   const repeated = routesList.filter((route) => route.n_rides > 1);
   const solo = routesList.filter((route) => route.n_rides === 1);
-  view.innerHTML = `    <div class="page-head"><div class="page-head__copy"><h1>Routes</h1></div></div>${routesList.length ? `<section class="route-grid">${[...repeated, ...solo].map((route) => `<a class="card route-card" href="#/route/${route.id}"><div class="route-card__top"><div><h3>${esc(route.name)}</h3><div class="route-card__date">${route.first_at === route.last_at ? esc(fmtDate(route.first_at)) : `${esc(fmtDate(route.first_at))} → ${esc(fmtDate(route.last_at))}`}</div></div>${confidenceTag(route.n_rides > 1 ? "high" : "low", `×${route.n_rides}`)}</div><div class="route-card__stats"><div class="route-card__stat"><small>Length</small><strong>${esc(fmtDistance(route.distance_m))}</strong></div><div class="route-card__stat"><small>Climb</small><strong>${esc(fmtMeters(route.gain_m))}</strong></div><div class="route-card__stat"><small>Recorded</small><strong>${route.n_rides} ride${route.n_rides === 1 ? "" : "s"}</strong></div></div></a>`).join("")}</section>` : emptyState("No routes yet", "Import a history of rides and repeated roads will be grouped automatically.", `<a class="button button--primary button--small" href="#/import">Import history</a>`)} `;
+  view.innerHTML = `    ${pageHeader("Routes")}${routesList.length ? `<section class="route-grid">${[...repeated, ...solo].map((route) => `<a class="card route-card" href="#/route/${route.id}"><h3>${esc(route.name)}</h3><div class="route-card__date">${route.first_at === route.last_at ? esc(fmtDate(route.first_at)) : `${esc(fmtDate(route.first_at))} → ${esc(fmtDate(route.last_at))}`}</div><div class="route-card__stats"><div class="route-card__stat"><small>Length</small><strong>${esc(fmtDistance(route.distance_m))}</strong></div><div class="route-card__stat"><small>Climb</small><strong>${esc(fmtMeters(route.gain_m))}</strong></div><div class="route-card__stat"><small>Recorded</small><strong>${route.n_rides} ride${route.n_rides === 1 ? "" : "s"}</strong></div></div></a>`).join("")}</section>` : emptyState("No routes yet", "Import a history of rides and repeated roads will be grouped automatically.", `<a class="button button--primary button--small" href="#/import">Import history</a>`)} `;
 }
 
 async function renderRouteDetail(id, token = startPage()) {
   view.innerHTML = `<div class="skeleton skeleton--card"></div><div class="skeleton skeleton--chart mt-24"></div>`;
   let route;
-  try { route = await api(`/api/routes/${id}`); } catch (error) { if (pageIsCurrent(token)) view.innerHTML = errorState("Route not found", "It may have been deleted, or the link is out of date."); return; }
+  try { route = await api(`/api/routes/${id}`); } catch (error) { if (pageIsCurrent(token)) view.innerHTML = errorState("Route not found", error.message, retryAction()); return; }
   if (!pageIsCurrent(token)) return;
   const rides = route.rides || [];
   const w140 = rides.filter((ride) => ride.watts_140 != null);
   const np = rides.filter((ride) => ride.normalized_power != null);
-  view.innerHTML = `<div class="detail-top"><a class="detail-back" href="#/routes">${icon("chevron-right")}Back to routes</a><span class="detail-file">${esc(route.name)}</span><span class="pill ${rides.length > 1 ? "pill--green" : "pill--muted"}">×${rides.length} rides</span></div><section class="detail-hero"><div class="detail-hero__title"><h1>${esc(route.name)}</h1></div><div class="detail-hero__stats"><div class="metric"><div class="metric__label">Route length</div><div class="metric__value">${esc(fmtDistance(route.distance_m))}</div></div><div class="metric"><div class="metric__label">Climbing / ride</div><div class="metric__value">${esc(fmtMeters(route.gain_m))}</div></div><div class="metric"><div class="metric__label">First recorded</div><div class="metric__value" style="font-size:17px">${esc(fmtDate(rides[0]?.started_at))}</div></div><div class="metric"><div class="metric__label">Latest recorded</div><div class="metric__value" style="font-size:17px">${esc(fmtDate(rides[rides.length - 1]?.started_at))}</div></div></div></section>${rides.length > 1 ? `<section class="card card-pad mt-20"><div class="card-title"><div><h2>Ride comparison</h2></div></div><div class="table-scroll"><table class="ride-table"><thead><tr><th>#</th><th>Date</th><th class="num">Time</th><th class="num">Avg speed</th><th class="num">Avg HR</th><th class="num" title="Watts your heart rate predicts at 140 bpm — the honest same-effort comparison">W @ 140</th><th class="num">Est. power</th><th class="num">Temp</th><th class="num">Wind</th></tr></thead><tbody>${rides.map((ride) => `<tr tabindex="0" data-route-ride="${ride.id}"><td class="mono">${ride.route_n}</td><td class="mono">${esc(fmtDateTime(ride.started_at))}</td><td class="num">${esc(fmtDuration(ride.duration_s))}</td><td class="num">${esc(fmtSpeed(ride.avg_speed_mps))}</td><td class="num">${ride.avg_hr ? `${Math.round(ride.avg_hr)} bpm` : "—"}</td><td class="num">${esc(fmtWatts(ride.watts_140))}</td><td class="num">${esc(fmtWatts(ride.avg_watts))}</td><td class="num">${esc(fmtTemp(ride.temp_c))}</td><td class="num">${esc(fmtWind(ride.wind_mps))}</td></tr>`).join("")}</tbody></table></div></section><section class="card chart-card mt-20"><div class="card-title"><div><h2>Progress on this road</h2></div><div class="chart-legend"><span class="legend-item"><i class="legend-swatch"></i>W @ 140 bpm</span><span class="legend-item"><i class="legend-swatch legend-swatch--blue"></i>Normalized power</span></div></div><div id="route-comparison-chart" class="chart chart--small"></div></section>` : `<section class="card card-pad mt-20"><div class="card-title"><div><h2>Ride it again</h2></div></div><a class="solo-ride" href="#/ride/${rides[0].id}"><span class="solo-ride__cell solo-ride__date">${esc(fmtDateTime(rides[0].started_at))}</span><span class="solo-ride__cell solo-ride__stat"><small>Time</small><strong>${esc(fmtDuration(rides[0].duration_s))}</strong></span><span class="solo-ride__cell solo-ride__stat"><small>Avg speed</small><strong>${esc(fmtSpeed(rides[0].avg_speed_mps))}</strong></span><span class="solo-ride__cell solo-ride__stat"><small>Avg HR</small><strong>${rides[0].avg_hr ? `${Math.round(rides[0].avg_hr)} bpm` : "—"}</strong></span><span class="solo-ride__cell solo-ride__cta">Open ride ${icon("chevron-right")}</span></a></section>`}`;
+  view.innerHTML = `<div class="detail-top"><a class="detail-back" href="#/routes">${icon("chevron-right")}Back to routes</a><span class="detail-count">${rides.length} ride${rides.length === 1 ? "" : "s"}</span></div><section class="detail-hero route-hero"><div class="detail-hero__title"><h1>${esc(route.name)}</h1><p class="detail-hero__lede">${rides.length > 1 ? "Compare the same road over time." : "Ride this route again to start a comparison."}</p></div><div class="detail-hero__primary"><div class="metric"><div class="metric__label">Route length</div><div class="metric__value">${esc(fmtDistance(route.distance_m))}</div></div><div class="metric"><div class="metric__label">Climbing / ride</div><div class="metric__value">${esc(fmtMeters(route.gain_m))}</div></div><div class="metric"><div class="metric__label">First recorded</div><div class="metric__value metric__value--date">${esc(fmtDate(rides[0]?.started_at))}</div></div><div class="metric"><div class="metric__label">Latest recorded</div><div class="metric__value metric__value--date">${esc(fmtDate(rides[rides.length - 1]?.started_at))}</div></div></div></section>${rides.length > 1 ? `<section class="card card-pad mt-20"><div class="card-title"><div><h2>Ride comparison</h2></div></div><div class="table-scroll"><table class="ride-table"><thead><tr><th>#</th><th>Date</th><th class="num">Time</th><th class="num">Avg speed</th><th class="num">Avg HR</th><th class="num" title="Watts your heart rate predicts at 140 bpm — the honest same-effort comparison">W @ 140</th><th class="num">Power</th><th class="num">Temp</th><th class="num">Wind</th></tr></thead><tbody>${rides.map((ride) => `<tr tabindex="0" data-route-ride="${ride.id}"><td class="mono">${ride.route_n}</td><td class="mono">${esc(fmtDateTime(ride.started_at))}</td><td class="num">${esc(fmtDuration(ride.duration_s))}</td><td class="num">${esc(fmtSpeed(ride.avg_speed_mps))}</td><td class="num">${ride.avg_hr ? `${Math.round(ride.avg_hr)} bpm` : "—"}</td><td class="num">${esc(fmtWatts(ride.watts_140))}</td><td class="num">${esc(fmtWatts(ride.avg_watts))}</td><td class="num">${esc(fmtTemp(ride.temp_c))}</td><td class="num">${esc(fmtWind(ride.wind_mps))}</td></tr>`).join("")}</tbody></table></div></section><section class="card chart-card mt-20"><div class="card-title"><div><h2>Progress on this road</h2></div><div class="chart-legend"><span class="legend-item"><i class="legend-swatch"></i>W @ 140 bpm</span><span class="legend-item"><i class="legend-swatch legend-swatch--blue"></i>Normalized power</span></div></div><div id="route-comparison-chart" class="chart chart--small"></div></section>` : `<section class="card card-pad mt-20"><div class="card-title"><div><h2>Ride it again</h2></div></div><a class="solo-ride" href="#/ride/${rides[0].id}"><span class="solo-ride__date">${esc(fmtDateTime(rides[0].started_at))}</span><span class="solo-ride__stat"><small>Time</small><strong>${esc(fmtDuration(rides[0].duration_s))}</strong></span><span class="solo-ride__stat"><small>Avg speed</small><strong>${esc(fmtSpeed(rides[0].avg_speed_mps))}</strong></span><span class="solo-ride__stat"><small>Avg HR</small><strong>${rides[0].avg_hr ? `${Math.round(rides[0].avg_hr)} bpm` : "—"}</strong></span><span class="solo-ride__cta">Open ride ${icon("chevron-right")}</span></a></section>`}`;
   $$('[data-route-ride]').forEach((row) => { const go = () => { location.hash = `#/ride/${row.dataset.routeRide}`; }; row.addEventListener("click", go); row.addEventListener("keydown", (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); go(); } }); });
   const xValues = [...new Set([...w140, ...np].map((ride) => ride.started_at))].sort((a, b) => a - b);
   const series = [];
@@ -1042,38 +1253,59 @@ async function renderRouteDetail(id, token = startPage()) {
     const values = Object.fromEntries(np.map((ride) => [ride.started_at, ride.normalized_power]));
     series.push({ name: "Normalized power", values: xValues.map((date) => values[date]), color: GRAPH.blue, width: 2, pointRadius: 3.5, format: "watts" });
   }
-  if (series.length) renderGraph("#route-comparison-chart", { ariaLabel: "Progress on this route over time", x: { values: xValues, type: "time", label: "ride date" }, y: { label: "watts", format: "watts", includeZero: true }, legend: false, series });
+  if (series.length) renderGraph("#route-comparison-chart", { ariaLabel: "Progress on this route over time", x: { values: xValues, type: "time", label: "ride date" }, y: { format: "watts", includeZero: true }, legend: false, series });
   else graphEmpty($("#route-comparison-chart"), "Not enough estimates yet", "Keep riding this route to build a useful comparison.");
 }
 
 /* ------------------------------------------------------------------ ride detail */
 
-function metricMarkup(label, value, unit = "", options = {}) {
-  const tag = options.tag ? `<span class="tag ${options.tagClass || "tag--orange"}">${esc(options.tag)}</span>` : "";
-  const formatBand = options.bandFormat || fmtWatts;
-  let band = "";
-  if (options.band && options.band.hi > 0) {
-    const { lo = 0, est = 0, hi = 1 } = options.band;
-    const spread = hi - lo;
-    const wide = est > 0 && spread / est >= .6;
-    const pct = (value) => Math.max(0, Math.min(100, value / hi * 100));
-    band = `<div class="uncertainty ${wide ? "uncertainty--wide" : ""}"><div class="uncertainty__track"><i class="uncertainty__range" style="left:${pct(lo)}%;width:${Math.max(2, pct(hi) - pct(lo))}%"></i><b class="uncertainty__marker" style="left:${pct(est)}%"></b></div><div class="uncertainty__note"><span>${esc(formatBand(lo))} – ${esc(formatBand(hi))}</span><strong>${wide ? "wide" : "tight"}</strong></div></div>`;
-  }
-  return `<div class="metric"><div class="metric__label"${options.title ? ` title="${esc(options.title)}"` : ""}>${esc(label)}${tag}</div><div class="metric__value">${esc(value)}${unit ? `<small>${esc(unit)}</small>` : ""}</div>${band}</div>`;
+function fmtRange(lo, hi) {
+  const low = finiteValue(lo), high = finiteValue(hi);
+  return low == null || high == null ? "" : `${fmtWatts(low)} – ${fmtWatts(high)}`;
+}
+function metricMarkup(label, value, unit = "", range = "") {
+  const hasValue = value !== "—" && value !== "";
+  return `<div class="metric"><div class="metric__label">${esc(label)}</div><div class="metric__value">${esc(value)}${hasValue && unit ? `<small>${esc(unit)}</small>` : ""}</div>${range ? `<div class="metric__range">${esc(range)}</div>` : ""}</div>`;
 }
 
 async function renderRideDetail(id, token = startPage()) {
   view.innerHTML = `<div class="skeleton skeleton--card"></div><div class="skeleton skeleton--chart mt-24"></div><div class="skeleton skeleton--chart mt-24"></div>`;
-  let ride, series, descents;
-  try { [ride, series, descents] = await Promise.all([api(`/api/rides/${id}`), api(`/api/rides/${id}/series?downsample=1800`), api(`/api/rides/${id}/descents`)]); } catch (error) { if (pageIsCurrent(token)) view.innerHTML = errorState("Ride not found", "It may have been deleted, or the link is out of date."); return; }
+  const results = await Promise.allSettled([
+    api(`/api/rides/${id}`),
+    api(`/api/rides/${id}/series?downsample=1800`),
+    api(`/api/rides/${id}/descents`),
+  ]);
+  const rideResult = results[0], seriesResult = results[1], descentsResult = results[2];
+  if (rideResult.status !== "fulfilled") {
+    if (pageIsCurrent(token)) view.innerHTML = errorState("Ride could not load", rideResult.reason?.message || "It may have been deleted, or the link is out of date.", retryAction());
+    return;
+  }
   if (!pageIsCurrent(token)) return;
+  const ride = rideResult.value;
+  const series = seriesResult.status === "fulfilled" ? seriesResult.value : { gps: [], hr: [], power: [] };
+  const descents = descentsResult.status === "fulfilled" ? descentsResult.value : { descents: [] };
+  const seriesFailure = seriesResult.status !== "fulfilled";
+  const descentsFailure = descentsResult.status !== "fulfilled";
   const metrics = ride.metrics || {};
-  const route = ride.route;
-  const title = rideTitle(ride, route);
-  view.innerHTML = `<div class="detail-top"><a class="detail-back" href="#/rides">${icon("chevron-right")}Back to rides</a><span class="detail-file">${esc(ride.filename || "FIT ride")}</span>${route ? `<a class="pill ${route.size > 1 ? "pill--green" : "pill--muted"}" href="#/route/${route.id}">${esc(route.name)} · ${route.position}/${route.size}</a>` : ""}<div class="detail-actions"><button class="button button--danger button--small" id="delete-ride">${icon("trash")}Delete ride</button></div></div><section class="detail-hero"><div class="detail-hero__title"><h1>${esc(title)}</h1><p>${esc(fmtDateTime(ride.started_at))} · ${esc(elevationLabel(ride.elevation_source))}</p><div class="mt-24"><span class="pill ${ride.bike_calibrated ? "pill--green" : "pill--orange"}">${ride.bike_calibrated ? "calibrated bike" : "estimated power"}</span></div></div><div class="detail-hero__stats">${metricMarkup("Distance", fmtDistance(metrics.distance_m))}${metricMarkup("Moving time", fmtDuration(metrics.duration_s))}${metricMarkup("Climbing", fmtMeters(metrics.elevation_gain_m))}${metricMarkup("Avg heart rate", metrics.avg_hr ? `${Math.round(metrics.avg_hr)} bpm` : "—")}${metricMarkup("Average power", metrics.avg_watts != null ? Math.round(metrics.avg_watts) : "—", "W", { tag: "estimated", band: { lo: metrics.avg_watts_lo, est: metrics.avg_watts, hi: metrics.avg_watts_hi } })}${metrics.calories?.hr_power?.watts ? metricMarkup("HR-predicted power", Math.round(metrics.calories.hr_power.watts), "W", { tag: "heart rate", tagClass: "tag--green", band: { lo: metrics.calories.hr_power.lo, est: metrics.calories.hr_power.watts, hi: metrics.calories.hr_power.hi }, title: "Whole-ride average power implied by your heart rate (Keytel energy equations \u00f7 ~24% efficiency). It includes descents the physics model reads as 0 W, so expect it above Average power — a cross-check, not a replacement." }) : ""}${metricMarkup("Normalized power", metrics.normalized_power != null ? Math.round(metrics.normalized_power) : "—", "W", { tag: "estimated", band: { lo: metrics.normalized_power_lo, est: metrics.normalized_power, hi: metrics.normalized_power_hi }, title: "Average power adjusted for how hard the effort swings." })}${metricMarkup("VO2max", metrics.vo2max != null ? Number(metrics.vo2max).toFixed(1) : "—", "ml/kg/min", { tag: "context", tagClass: "tag--blue", title: "Estimated aerobic capacity — how much oxygen your body can use per kilo per minute." })}${metricMarkup("TRIMP load", metrics.trimp ? Math.round(metrics.trimp) : "—", "", { title: "Training load — heart-rate effort multiplied by time." })}${metrics.calories && metrics.calories.kcal > 0 ? metricMarkup("Calories", Math.round(metrics.calories.kcal), "kcal", { tag: metrics.calories.method === "hr" ? "heart rate" : "power est.", tagClass: metrics.calories.method === "hr" ? "tag--green" : "tag--orange", band: { lo: metrics.calories.lo, est: metrics.calories.kcal, hi: metrics.calories.hi }, bandFormat: fmtKcal, title: metrics.calories.note }) : ""}</div></section><section class="card telemetry-card"><div class="telemetry-head"><div><h2>Ride replay</h2></div><div class="telemetry-tools"><button class="button button--primary button--small" id="replay-play">${icon("play")}<span>Play replay</span></button></div></div><div class="map-wrap"><div id="ride-map" class="ride-map"></div></div><div class="scrubber"><div class="scrubber__line"><input id="scrub-slider" type="range" min="0" max="0" value="0" aria-label="Scrub through ride"><span id="scrub-time" class="scrubber__time">0:00</span></div><div id="scrub-readout" class="readout"></div></div><div class="descents"><div class="descents__title"><h3>Descents</h3><p>Freewheeled, pedalled or braked? Your tag is what the loop calibration trusts over heart rate — a “Pedalled” tag also keeps that descent in your power estimate (user-tagged, not a sensor reading).</p></div><div id="descents-list" class="list-stack"></div></div></section><section class="telemetry-graphs"><article class="card telemetry-graph"><div class="card-title"><div><h2>Elevation &amp; grade</h2></div></div><div id="ch-elev" class="chart chart--small"></div></article><article class="card telemetry-graph"><div class="card-title"><div><h2>Heart rate</h2></div></div><div id="ch-hr" class="chart chart--small"></div></article><article class="card telemetry-graph"><div class="card-title"><div><h2>Power estimate</h2></div></div><div id="ch-power" class="chart chart--small"></div></article><article class="card telemetry-graph"><div class="card-title"><div><h2>Speed</h2></div></div><div id="ch-speed" class="chart chart--small"></div></article></section><article class="card telemetry-graph mt-20"><div class="card-title"><div><h2>Gradient distribution</h2></div></div><div id="ch-grade" class="chart chart--small"></div></article><article id="drift-card" class="card drift-card"></article>`;
-  $("#delete-ride").addEventListener("click", async () => { if (!confirm("Delete this ride from the local database?")) return; try { await api(`/api/rides/${id}`, { method: "DELETE" }); toast("Ride deleted."); location.hash = "#/rides"; } catch (error) { toast(error.message); } });
-  const chartRefs = drawTelemetryCharts(series, metrics);
-  setupReplay(series, chartRefs, descents.descents || [], id);
+  const avgPowerRange = fmtRange(metrics.avg_watts_lo, metrics.avg_watts_hi);
+  const normalizedPowerRange = fmtRange(metrics.normalized_power_lo, metrics.normalized_power_hi);
+  view.innerHTML = `<div class="detail-top"><a class="detail-back" href="#/rides">${icon("chevron-right")}Back to rides</a><div class="detail-actions"><button class="button button--danger button--small" id="delete-ride" type="button">${icon("trash")}Delete ride</button></div></div><section class="detail-hero"><div class="detail-hero__title"><h1>${esc(fmtDate(ride.started_at))}</h1><p class="detail-hero__lede">${esc(fmtTime(ride.started_at))}</p></div><div class="detail-hero__primary">${metricMarkup("Distance", fmtDistance(metrics.distance_m))}${metricMarkup("Moving time", fmtDuration(metrics.duration_s))}${metricMarkup("Climbing", fmtMeters(metrics.elevation_gain_m))}</div><h2 class="detail-hero__subhead">Power</h2><div class="detail-hero__power">${metricMarkup("Average power", metrics.avg_watts != null ? Math.round(metrics.avg_watts) : "—", "W", avgPowerRange)}${metricMarkup("Normalized power", metrics.normalized_power != null ? Math.round(metrics.normalized_power) : "—", "W", normalizedPowerRange)}</div></section><section class="card telemetry-card"><div class="telemetry-head"><div><h2>Ride replay</h2></div><div class="telemetry-tools"><button class="button button--primary button--small" id="replay-play" type="button" aria-pressed="false">${icon("play")}<span>Play replay</span></button></div></div><div class="map-wrap"><div id="ride-map" class="ride-map"></div></div><div class="scrubber"><div class="scrubber__line"><input id="scrub-slider" type="range" min="0" max="0" value="0" aria-label="Scrub through ride"><span id="scrub-time" class="scrubber__time">0:00</span></div><div id="scrub-readout" class="readout"></div></div><details class="descents"><summary class="descents__summary"><span>Descents</span><span id="descents-count" class="detail-count">Loading…</span></summary><div class="descents__body"><p class="descents__hint">Choose a label when the automatic reading is wrong.</p><div id="descents-list" class="list-stack"></div></div></details></section><section class="telemetry-graphs"><article class="card telemetry-graph"><div class="card-title"><div><h2>Elevation &amp; grade</h2></div></div><div id="ch-elev" class="chart chart--small"></div></article><article class="card telemetry-graph"><div class="card-title"><div><h2>Heart rate</h2></div></div><div id="ch-hr" class="chart chart--small"></div></article><article class="card telemetry-graph"><div class="card-title"><div><h2>Power</h2></div></div><div id="ch-power" class="chart chart--small"></div></article><article class="card telemetry-graph"><div class="card-title"><div><h2>Speed</h2></div></div><div id="ch-speed" class="chart chart--small"></div></article></section><article class="card telemetry-graph mt-20"><div class="card-title"><div><h2>Gradient distribution</h2></div></div><div id="ch-grade" class="chart chart--small"></div></article>${metrics.cardiac_drift && metrics.has_hr ? `<article id="drift-card" class="card drift-card"></article>` : ""}`;
+  $("#delete-ride").addEventListener("click", async () => { if (!window.confirm("Delete this ride?\n\nThis removes the ride and its derived analysis from the local database.")) return; const button = $("#delete-ride"); button.disabled = true; try { await api(`/api/rides/${id}`, { method: "DELETE" }); if (!pageIsCurrent(token)) return; toast("Ride deleted."); location.hash = "#/rides"; } catch (error) { if (pageIsCurrent(token)) { button.disabled = false; toast(error.message); } } });
+  const chartRefs = seriesFailure ? {} : drawTelemetryCharts(series, metrics);
+  setupReplay(series, chartRefs, seriesFailure ? [] : descents.descents || [], id);
+  if (seriesFailure) {
+    const descentCount = $("#descents-count");
+    if (descentCount) descentCount.textContent = "Unavailable";
+    ["#ride-map", "#ch-elev", "#ch-hr", "#ch-power", "#ch-speed", "#ch-grade", "#descents-list"].forEach((selector) => {
+      const target = $(selector);
+      if (target) target.innerHTML = errorState("Ride data unavailable", "The timeline could not be loaded.", retryAction());
+    });
+  } else if (descentsFailure) {
+    const descentCount = $("#descents-count");
+    if (descentCount) descentCount.textContent = "Unavailable";
+    const target = $("#descents-list");
+    if (target) target.innerHTML = errorState("Descent review unavailable", "Try again to load the descent list.", retryAction());
+  }
   renderDriftCard(metrics.cardiac_drift, metrics.has_hr);
 }
 
@@ -1123,8 +1355,8 @@ function drawTelemetryCharts(series, metrics) {
     refs.elev = renderGraph("#ch-elev", {
       ariaLabel: "Elevation and grade across the ride",
       x: { values: distance, type: "linear", label: xLabel },
-      y: { label: "metres", format: "meters" },
-      yRight: { label: "grade", format: "percent", includeZero: true },
+      y: { format: "meters" },
+      yRight: { format: "percent", includeZero: true },
       series: [
         { name: "Elevation", values: gps.map((point) => point.elev), color: GRAPH.green, width: 2.3, pointRadius: 1.7, points: false, area: true, areaColor: GRAPH.greenSoft, format: "meters" },
         { name: "Grade", values: gps.map((point) => point.grade == null ? null : point.grade * 100), axis: "right", color: GRAPH.orange, width: 1.4, pointRadius: 1.5, points: false, format: "percent" },
@@ -1134,7 +1366,7 @@ function drawTelemetryCharts(series, metrics) {
     refs.speed = renderGraph("#ch-speed", {
       ariaLabel: "Speed across the ride",
       x: { values: distance, type: "linear", label: xLabel },
-      y: { label: "km/h", format: "speed", includeZero: true },
+      y: { format: "speed", includeZero: true },
       series: [{ name: "Speed", values: gps.map((point) => point.speed != null ? point.speed * 3.6 : null), color: GRAPH.blue, width: 2.1, pointRadius: 1.7, points: false, format: "speed" }],
     });
     refs.speed.xOf = (index) => distance[index];
@@ -1156,7 +1388,7 @@ function drawTelemetryCharts(series, metrics) {
     refs.hr = renderGraph("#ch-hr", {
       ariaLabel: "Heart rate across the ride",
       x: { values: hrX, type: "linear", label: "minutes" },
-      y: { label: "bpm", format: "bpm" },
+      y: { format: "bpm" },
       series: [{ name: "Heart rate", values: hrValues, color: GRAPH.ink, width: 1.9, pointRadius: 1.8, points: false, format: "bpm" }],
     });
     refs.hr.xOf = (index) => gps[index] ? (gps[index].t - t0) / 60 : 0;
@@ -1171,21 +1403,21 @@ function drawTelemetryCharts(series, metrics) {
     const wattsHi = smoothSeries(powerAligned.map((point) => point?.watts_hi ?? null), powerTimes);
     refs.powerSmoothed = { wattsEst, wattsLo, wattsHi };
     refs.power = renderGraph("#ch-power", {
-      ariaLabel: "Estimated power and uncertainty across the ride",
+      ariaLabel: "Power and range across the ride",
       x: { values: distance, type: "linear", label: xLabel },
-      y: { label: "watts", format: "watts", includeZero: true, robust: true },
+      y: { format: "watts", includeZero: true, robust: true },
       series: [{
-        name: "Estimated power", values: wattsEst, color: GRAPH.orange, width: 2.1, pointRadius: 1.8, points: false, format: "watts",
+        name: "Power", values: wattsEst, color: GRAPH.orange, width: 2.1, pointRadius: 1.8, points: false, format: "watts",
         band: { lo: wattsLo, hi: wattsHi, pattern: true },
       }],
     });
     refs.power.xOf = (index) => distance[index];
-  } else graphEmpty($("#ch-power"), "No power estimate", "Power points were not stored for this Ride.");
+  } else graphEmpty($("#ch-power"), "No power data", "Power points were not stored for this Ride.");
   const distribution = metrics.grade_distribution || [];
   if (distribution.length) renderGraph("#ch-grade", {
     ariaLabel: "Distribution of grade across the ride",
     x: { values: distribution.map((_, index) => index), type: "category", labels: distribution.map((bucket) => `${bucket.from}%`), label: "grade" },
-    y: { label: "samples", format: "integer", includeZero: true },
+    y: { format: "integer", includeZero: true },
     series: [{ name: "Samples", values: distribution.map((bucket) => bucket.count), type: "bar", pointColors: distribution.map((bucket) => bucket.from >= 3 ? GRAPH.orange : GRAPH.green), opacity: .8, format: "integer" }],
   });
   else graphEmpty($("#ch-grade"), "No grade distribution", "There is not enough elevation data to draw this view.");
@@ -1211,18 +1443,34 @@ function drawDescentHighlights(map, gps, descents) {
   });
   return group;
 }
+function descentNeedsReview(descent) {
+  return !["coast", "pedal", "brake"].includes(descent.label);
+}
+function descentActionLabel(value) {
+  return value === "clear" ? "Auto" : value === "coast" ? "Freewheel" : value === "pedal" ? "Pedal" : "Brake";
+}
 function setupDescentTags(rideId, descents, gps, map, seek) {
   const listEl = $("#descents-list");
   if (!listEl) return;
+  const pageToken = state.pageToken;
   const t0 = gps[0]?.t || 0;
   let highlight = null;
+  let updateVersion = 0;
+  let pendingUpdates = 0;
 
-  async function refresh() {
+  function orderDescents(items) {
+    return [...items].sort((a, b) => Number(descentNeedsReview(b)) - Number(descentNeedsReview(a)) || (a.t_start || 0) - (b.t_start || 0));
+  }
+  descents = orderDescents(descents);
+
+  async function refresh(version) {
     try {
       const fresh = await api(`/api/rides/${rideId}/descents`);
-      descents = fresh.descents || [];
+      if (!pageIsCurrent(pageToken) || version !== updateVersion || pendingUpdates) return false;
+      descents = orderDescents(fresh.descents || []);
       redraw();
-    } catch (error) { toast(error.message); }
+      return true;
+    } catch (error) { if (pageIsCurrent(pageToken) && version === updateVersion) toast(error.message); return false; }
   }
 
   function redraw() {
@@ -1232,26 +1480,24 @@ function setupDescentTags(rideId, descents, gps, map, seek) {
   }
 
   function renderList() {
+    const count = $("#descents-count");
+    const reviewCount = descents.filter(descentNeedsReview).length;
+    if (count) count.textContent = descents.length ? `${reviewCount} to review · ${descents.length} total` : "None detected";
     if (!descents.length) {
-      listEl.innerHTML = emptyState("No descents detected", "This ride has no runs below −1% grade, so the loop calibration has nothing to trust yet.");
+      listEl.innerHTML = emptyState("No descents detected", "This ride has no runs below −1% grade.");
       return;
     }
     listEl.innerHTML = descents.map((descent, index) => {
-      const rel = (t) => fmtDuration(Math.max(0, t - t0));
-      const meta = descent.source === "manual" ? "your tag" : descent.score != null ? `auto · ${Math.round(descent.score * 100)}% coast` : "auto";
-      // Exactly one button is ever highlighted: the chosen tag for a manual
-      // tag, or Auto (labelled with the classifier's verdict) for an
-      // untagged descent — so an auto-classified coast reads as the Auto
-      // button's choice, not as two selections at once.
-      const autoVerdict = (descent.source === "auto" && ["coast", "pedal", "brake"].includes(descent.label))
-        ? ` · ${esc(descentLabelText(descent))}` : "";
-      const manualActive = (tag) => (descent.source === "manual" && descent.label === tag) ? "active" : "";
-      return `<div class="list-row"><div class="list-row__main descents__seek" data-index="${index}" role="button" tabindex="0"><strong>${esc(descentLabelText(descent))}</strong><small>${esc(rel(descent.t_start))} – ${esc(rel(descent.t_end))} · ${esc(meta)}</small></div><div class="segmented descents__tags" role="group" aria-label="Tag this descent"><button data-tag="coast" class="${manualActive("coast")}">Freewheeled</button><button data-tag="pedal" class="${manualActive("pedal")}">Pedalled</button><button data-tag="brake" class="${manualActive("brake")}">Braked</button><button data-tag="clear" class="${descent.source === "auto" ? "active" : ""}">Auto${autoVerdict}</button></div></div>`;
+      const rel = (t) => fmtElapsed(Math.max(0, t - t0));
+      const current = descent.source === "manual" ? descent.label : "clear";
+      const actions = ["clear", "coast", "pedal", "brake"].map((value) => `<button type="button" class="descent-tag${current === value ? " active" : ""}" data-value="${value}" aria-pressed="${current === value}">${descentActionLabel(value)}</button>`).join("");
+      return `<div class="list-row"><div class="list-row__main descents__seek" data-index="${index}" role="button" tabindex="0" aria-label="Seek to ${esc(descentLabelText(descent))} descent from ${esc(rel(descent.t_start))} to ${esc(rel(descent.t_end))}"><strong>${esc(descentLabelText(descent))}</strong><small>${esc(rel(descent.t_start))} – ${esc(rel(descent.t_end))}</small></div><div class="descent-control" role="group" aria-label="Classify this descent"><div class="descent-tags">${actions}</div></div></div>`;
     }).join("");
 
     $$(".descents__seek", listEl).forEach((node) => {
       const descent = descents[+node.dataset.index];
       const activate = () => {
+        if (!gps.length) return;
         let nearest = 0;
         gps.forEach((point, i) => { if (Math.abs(point.t - descent.t_start) < Math.abs(gps[nearest].t - descent.t_start)) nearest = i; });
         seek(nearest);
@@ -1260,27 +1506,36 @@ function setupDescentTags(rideId, descents, gps, map, seek) {
       node.addEventListener("keydown", (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); activate(); } });
     });
 
-    $$(".descents__tags", listEl).forEach((group) => {
-      const descent = descents[+group.closest(".list-row").querySelector(".descents__seek").dataset.index];
-      $$("button", group).forEach((button) => button.addEventListener("click", async () => {
-        if (group.dataset.busy) return; // one save in flight per descent
-        group.dataset.busy = "1";
-        const label = button.dataset.tag === "clear" ? null : button.dataset.tag;
-        // Optimistic feedback: highlight the choice immediately so a slow
-        // save never looks dead; the CSS dims the disabled group while it
-        // saves (label text is left alone so the pill never shifts width).
-        group.querySelectorAll("button").forEach((b) => { b.disabled = true; b.classList.remove("active"); });
-        button.classList.add("active");
+    $$(".descent-tag", listEl).forEach((button) => {
+      const row = button.closest(".list-row");
+      const descent = descents[+row.querySelector(".descents__seek").dataset.index];
+      const group = button.closest(".descent-tags");
+      button.addEventListener("click", async () => {
+        if (button.dataset.busy) return;
+        button.dataset.busy = "1";
+        updateVersion += 1;
+        pendingUpdates += 1;
+        const previous = group.querySelector(".descent-tag.active")?.dataset.value || "clear";
+        const value = button.dataset.value;
+        const label = value === "clear" ? null : value;
+        $$(".descent-tag", group).forEach((item) => { item.disabled = true; item.classList.toggle("active", item === button); item.setAttribute("aria-pressed", String(item === button)); });
         try {
           await api(`/api/rides/${rideId}/coast_segments`, { method: "POST", body: { t_start: descent.t_start, t_end: descent.t_end, label } });
-          toast(label ? `${descentLabelText({ label })} tag saved.` : "Tag cleared — back to auto.");
-          await refresh();
+          if (pageIsCurrent(pageToken)) toast(label ? `${descentActionLabel(value)} tag saved.` : "Tag cleared — back to auto.");
         } catch (error) {
-          toast(error.message);
-          try { await refresh(); } catch (_) { redraw(); } // revert the optimistic state
+          if (pageIsCurrent(pageToken)) {
+            $$(".descent-tag", group).forEach((item) => { const active = item.dataset.value === previous; item.disabled = false; item.classList.toggle("active", active); item.setAttribute("aria-pressed", String(active)); });
+            toast(error.message);
+          }
         }
-        delete group.dataset.busy;
-      }));
+        if (!pageIsCurrent(pageToken)) return;
+        pendingUpdates -= 1;
+        delete button.dataset.busy;
+        $$(".descent-tag", group).forEach((item) => { item.disabled = false; });
+        if (pendingUpdates) return;
+        const refreshVersion = updateVersion;
+        if (!await refresh(refreshVersion) && pageIsCurrent(pageToken) && refreshVersion === updateVersion && !pendingUpdates) redraw();
+      });
     });
   }
 
@@ -1290,11 +1545,19 @@ function setupDescentTags(rideId, descents, gps, map, seek) {
 function setupReplay(series, chartRefs, descents = [], rideId = null) {
   const gps = series.gps || [], hr = series.hr || [], power = series.power || [];
   const slider = $("#scrub-slider"), readout = $("#scrub-readout"), timeLabel = $("#scrub-time"), playButton = $("#replay-play");
-  if (!slider || gps.length < 2) { if (slider) slider.disabled = true; return; }
+  if (!slider || gps.length < 2) {
+    if (slider) { slider.disabled = true; slider.setAttribute("aria-valuetext", "Ride replay unavailable"); }
+    const count = $("#descents-count"), list = $("#descents-list");
+    if (count) count.textContent = "Unavailable";
+    if (list) list.innerHTML = errorState("Descent review unavailable", "A ride timeline is needed to place descents.", retryAction());
+    return;
+  }
   const t0 = gps[0].t, total = Math.max(1, gps[gps.length - 1].t - t0);
   const distances = gps.map((point, index) => point.dist != null ? point.dist / 1000 : index);
   const hrAligned = alignNearest(hr, gps), powerAligned = alignNearest(power, gps);
-  const latlngs = gps.filter((point) => point.lat != null && point.lon != null).map((point) => [point.lat, point.lon]);
+  const mapPoints = gps.map((point, index) => point.lat != null && point.lon != null ? { index, latlng: [point.lat, point.lon] } : null).filter(Boolean);
+  const latlngs = mapPoints.map((point) => point.latlng);
+  const mapIndexForGps = new Map(mapPoints.map((point, mapIndex) => [point.index, mapIndex]));
   let playhead = null;
   if (latlngs.length > 1 && window.L) {
     state.map = window.L.map($("#ride-map"), { scrollWheelZoom: false, zoomControl: true });
@@ -1314,9 +1577,10 @@ function setupReplay(series, chartRefs, descents = [], rideId = null) {
   function seek(index) {
     const current = Math.max(0, Math.min(gps.length - 1, Math.round(index)));
     slider.value = current;
+    const point = gps[current] || {};
+    slider.setAttribute("aria-valuetext", `${fmtDuration(point.t - t0)} of ${fmtDuration(total)}`);
     const percent = current / (gps.length - 1) * 100;
     slider.style.setProperty("--progress", `${percent}%`);
-    const point = gps[current] || {};
     const hrPoint = hrAligned[current];
     const powerPoint = powerAligned[current];
     /* Show the same display-smoothed power the chart draws, so the readout
@@ -1334,10 +1598,9 @@ function setupReplay(series, chartRefs, descents = [], rideId = null) {
       ["Speed", fmtSpeed(point.speed), ""],
       ["Heart rate", hrPoint?.hr != null ? `${Math.round(hrPoint.hr)} bpm` : "—", ""],
       ["Power", wattsEst != null ? `${Math.round(wattsEst)} W` : "—", wattsHi > 0 ? `${Math.round(wattsLo)}–${Math.round(wattsHi)} W` : ""],
-      ["Elevation", fmtMeters(point.elev), ""],
-      ["Grade", point.grade != null ? `${(point.grade * 100).toFixed(1)}%` : "—", ""],
-    ].map(([label, value, note]) => `<div class="readout__field"><div class="readout__label">${esc(label)}</div><div class="readout__value">${esc(value)}</div><div class="readout__note"${note ? "" : " style=\"visibility:hidden\""}>${esc(note || "\u00a0")}</div></div>`).join("");
-    if (playhead && latlngs.length) playhead.setLatLng(latlngs[Math.min(current, latlngs.length - 1)]);
+    ].map(([label, value, note]) => `<div class="readout__field"><div class="readout__label">${esc(label)}</div><div class="readout__value">${esc(value)}</div><div class="readout__note${note ? "" : " readout__note--empty"}">${esc(note || "\u00a0")}</div></div>`).join("");
+    const mapIndex = mapIndexForGps.get(current);
+    if (playhead && mapIndex != null) playhead.setLatLng(latlngs[mapIndex]);
     const cursor = {};
     Object.entries(chartRefs).forEach(([key, ref]) => { if (ref?.el && ref.xOf) cursor[key] = { el: ref, x: ref.xOf(current) }; });
     scheduleCursor(cursor);
@@ -1349,77 +1612,105 @@ function setupReplay(series, chartRefs, descents = [], rideId = null) {
   slider.max = gps.length - 1;
   slider.addEventListener("input", () => seek(+slider.value));
   ["elev", "power", "speed", "hr"].forEach((key) => { const ref = chartRefs[key]; if (!ref?.el) return; bindGraphSeek(ref, (value) => { if (key === "hr") { const target = t0 + Number(value) * 60; let nearest = 0; gps.forEach((point, index) => { if (Math.abs(point.t - target) < Math.abs(gps[nearest].t - target)) nearest = index; }); seek(nearest); } else { let nearest = 0; distances.forEach((distance, index) => { if (Math.abs(distance - Number(value)) < Math.abs(distances[nearest] - Number(value))) nearest = index; }); seek(nearest); } }); });
-  playButton.addEventListener("click", () => { if (state.playback) { stopPlayback(); playButton.innerHTML = `${icon("play")}<span>Play replay</span>`; return; } const startIndex = state.replayIndex >= gps.length - 1 ? 0 : state.replayIndex || 0;    const started = performance.now(); const startTime = gps[startIndex].t; const speed = Math.max(1, total / 180); let index = startIndex; function frame(now) { if (!document.body.contains(playButton)) { stopPlayback(); return; } const elapsed = (now - started) / 1000 * speed; const targetTime = startTime + elapsed; while (index < gps.length - 1 && gps[index].t < targetTime) index += 1; seek(index); if (index >= gps.length - 1) { stopPlayback(); playButton.innerHTML = `${icon("play")}<span>Play replay</span>`; return; } state.playback = requestAnimationFrame(frame); } state.playback = requestAnimationFrame(frame); playButton.innerHTML = `${icon("pause")}<span>Pause replay</span>`; });
+  playButton.addEventListener("click", () => { if (state.playback) { stopPlayback(); setReplayButton(playButton, false); return; } const startIndex = state.replayIndex >= gps.length - 1 ? 0 : state.replayIndex || 0;    const started = performance.now(); const startTime = gps[startIndex].t; const speed = Math.max(1, total / 180); let index = startIndex; function frame(now) { if (!document.body.contains(playButton)) { stopPlayback(); return; } const elapsed = (now - started) / 1000 * speed; const targetTime = startTime + elapsed; while (index < gps.length - 1 && gps[index].t < targetTime) index += 1; seek(index); if (index >= gps.length - 1) { stopPlayback(); setReplayButton(playButton, false); return; } state.playback = requestAnimationFrame(frame); } state.playback = requestAnimationFrame(frame); setReplayButton(playButton, true); });
   seek(0);
+}
+function setReplayButton(button, playing) {
+  if (!button) return;
+  button.innerHTML = `${icon(playing ? "pause" : "play")}<span>${playing ? "Pause replay" : "Play replay"}</span>`;
+  button.setAttribute("aria-pressed", String(playing));
 }
 function stopPlayback() { if (state.playback) cancelAnimationFrame(state.playback); state.playback = null; }
 function renderDriftCard(drift, hasHr) {
   const el = $("#drift-card"); if (!el) return;
-  if (!hasHr) { el.innerHTML = `<div class="card-title"><div><h2>Cardiac drift</h2><p>No heart-rate data in this Ride.</p></div></div>${emptyState("No HR, no invented answer", "Cardiac drift needs a recorded heart-rate signal.")}`; return; }
-  if (!drift) { el.innerHTML = `<div class="card-title"><div><h2>Cardiac drift</h2><p>HR rise during a steady effort</p></div><span class="pill pill--muted">quiet by design</span></div>${emptyState("No steady window found", "Estimated workload varied too much, or the effort was too short, to separate HR drift from wind and terrain. Staying quiet is more honest than inventing a number.")}`; return; }
+  if (!hasHr || !drift) { el.remove(); return; }
   const positive = drift.drift_bpm_per_hr > 0;
-  el.innerHTML = `<div class="card-title"><div><h2>Cardiac drift</h2><p>${esc(drift.duration_min)} min steady effort at approximately ${esc(drift.mean_power)} W estimated</p></div>${confidenceTag(positive ? "context" : "high", positive ? "signal" : "recovery")}</div><div class="drift-stat-grid"><div class="drift-stat"><div class="label">Drift</div><strong>${positive ? "+" : ""}${esc(drift.drift_bpm_per_hr)} <small>bpm/hr</small></strong></div><div class="drift-stat"><div class="label">Relative</div><strong>${positive ? "+" : ""}${esc(drift.drift_pct_per_hr)} <small>%/hr</small></strong></div><div class="drift-stat"><div class="label">Heart rate</div><strong>${esc(drift.start_hr)} → ${esc(drift.end_hr)} <small>bpm</small></strong></div><div class="drift-stat"><div class="label">Fit r²</div><strong>${Number(drift.r2).toFixed(2)}</strong></div></div><p class="drift-explainer">${positive ? "Heart rate climbed while estimated power stayed steady — the classic drift signal. Less drift at the same effort over a season is a useful sign of aerobic progress." : "Heart rate fell during this window, the opposite of drift. It may be recovery after a surge or a slowing effort."}</p>`;
+  el.innerHTML = `<div class="card-title"><div><h2>Cardiac drift</h2><p>${esc(drift.duration_min)} min steady effort at approximately ${esc(drift.mean_power)} W</p></div></div><div class="drift-stat-grid"><div class="drift-stat"><div class="label">Drift</div><strong>${positive ? "+" : ""}${esc(drift.drift_bpm_per_hr)} <small>bpm/hr</small></strong></div><div class="drift-stat"><div class="label">Relative</div><strong>${positive ? "+" : ""}${esc(drift.drift_pct_per_hr)} <small>%/hr</small></strong></div><div class="drift-stat"><div class="label">Heart rate</div><strong>${esc(drift.start_hr)} → ${esc(drift.end_hr)} <small>bpm</small></strong></div><div class="drift-stat"><div class="label">Fit r²</div><strong>${Number(drift.r2).toFixed(2)}</strong></div></div><p class="drift-explainer">${positive ? "Heart rate climbed while power stayed steady. Less drift at the same effort over a season is a useful sign of aerobic progress." : "Heart rate fell during this window, the opposite of drift. It may be recovery after a surge or a slowing effort."}</p>`;
 }
 
 /* ------------------------------------------------------------------ profile */
 
 async function renderProfile(_, token = startPage()) {
-  view.innerHTML = `    <div class="page-head"><div class="page-head__copy"><h1>Profile</h1></div></div><div class="skeleton skeleton--card"></div>`;
-  let profile, calibrations;
-  try { [profile, calibrations] = await Promise.all([api("/api/profile"), api("/api/calibrations")]); } catch (error) { if (pageIsCurrent(token)) view.innerHTML = errorState("Profile could not load", error.message); return; }
+  view.innerHTML = `<div class="skeleton skeleton--card"></div>`;
+  const [profileResult, calibrationsResult] = await Promise.allSettled([api("/api/profile"), api("/api/calibrations")]);
+  if (profileResult.status !== "fulfilled") {
+    if (pageIsCurrent(token)) view.innerHTML = errorState("Profile could not load", profileResult.reason?.message || "Try again to load your profile.", retryAction());
+    return;
+  }
   if (!pageIsCurrent(token)) return;
+  const profile = profileResult.value;
+  const calibrations = calibrationsResult.status === "fulfilled" ? calibrationsResult.value : [];
+  const calibrationsFailure = calibrationsResult.status === "rejected" ? calibrationsResult.reason : null;
   const rider = profile.rider || {}, bike = profile.bike || {}, zones = rider.hr_zones || [];
-  view.innerHTML = `    <div class="page-head"><div class="page-head__copy"><h1>Profile</h1></div></div><section class="form-layout"><article class="card form-card"><div class="form-section"><h3>Rider</h3><p>Used for heart-rate zones, load, and the total mass in the power model.</p><div class="form-grid"><label class="form-field">Age<input id="r-age" type="number" value="${esc(rider.age || 40)}"></label><label class="form-field">Weight <input id="r-weight" type="number" step=".5" value="${esc(rider.weight_kg || 75)}"></label><label class="form-field">Height <input id="r-height" type="number" step=".5" value="${esc(rider.height_cm || 178)}"></label><label class="form-field">Resting HR<input id="r-rest" type="number" value="${esc(rider.resting_hr || 55)}"></label><label class="form-field">Max HR<input id="r-maxhr" type="number" value="${esc(rider.max_hr || 180)}"></label><label class="form-field">Bike type<select id="r-bike">${["road", "gravel", "mountain", "hybrid", "tt"].map((type) => `<option value="${type}" ${rider.bike_type === type ? "selected" : ""}>${type}</option>`).join("")}</select></label><label class="form-field">Sex<select id="r-sex"><option value="" ${rider.sex ? "" : "selected"}>Not set</option><option value="male" ${rider.sex === "male" ? "selected" : ""}>Male</option><option value="female" ${rider.sex === "female" ? "selected" : ""}>Female</option></select><small style="text-transform:none;letter-spacing:0;font-weight:400">Drives the heart-rate calorie estimate and TRIMP load.</small></label></div></div><div class="form-section"><h3>Heart-rate zones</h3><p>Edit the boundaries if you know your own zones. They drive TRIMP and fitness/freshness.</p><div class="zone-grid">${[0,1,2,3,4].map((index) => { const zone = zones[index] || { lo: 0, hi: 0 }; const prevHi = index === 0 ? null : (zones[index - 1] || { hi: 0 }).hi; return `<div class="zone"><strong>Z${index + 1}</strong>${index === 0 ? `<input id="z0-lo" type="number" min="30" max="250" value="${esc(zone.lo)}" aria-label="Zone 1 lower">` : `<span class="zone__inherit" aria-hidden="true">${esc(prevHi)}</span>`}<span class="zone__dash" aria-hidden="true">to</span><input id="z${index}-hi" type="number" min="30" max="250" value="${esc(zone.hi)}" aria-label="Zone ${index + 1} upper${index === 0 ? "" : ` (from ${esc(prevHi)})`}"></div>`; }).join("")}</div></div></article><article class="card form-card"><div class="form-section"><h3>Bike</h3><p>The bike profile is the other half of the physics model.</p><div class="form-grid form-grid--two"><label class="form-field">Name<input id="b-name" type="text" value="${esc(bike.name || "Road bike")}"></label><label class="form-field">Mass <input id="b-mass" type="number" step=".1" value="${esc(bike.mass_kg || 9)}"></label><label class="form-field">Rolling resistance<input id="b-crr" type="number" step=".0001" value="${esc(bike.crr || .005)}" title="Crr — how much the tyres resist rolling. Lower is faster on flats."></label><label class="form-field">Drag area CdA<input id="b-cda" type="number" step=".01" value="${esc(bike.cdA || .35)}" title="CdA = drag coefficient × frontal area. Lower means more aero."></label><label class="form-field">Drivetrain efficiency<input id="b-eff" type="number" step=".01" value="${esc(bike.drivetrain_efficiency || .97)}"></label></div></div><div class="form-section"><div class="calibration-note"><strong>${bike.calibrated ? "Bike calibration is active" : "Default assumptions are active"}</strong>${bike.calibrated ? "Your recent calibration tightens the uncertainty band where the physics supports it." : "A closed loop with coasting descents can fit Crr and CdA from your own riding."}</div><div class="save-row"><span class="subtle mono">Changes recalculate stored rides.</span><button class="button button--primary" id="save-profile">Save changes</button></div></div></article></section><section class="card card-pad mt-20"><div class="card-title"><div><h2>Calibration history</h2></div><button class="button button--primary button--small" id="run-pooled">Run pooled calibration</button></div><div id="calibration-list"></div></section>`;
-  const fieldIds = ["r-age", "r-weight", "r-height", "r-rest", "r-maxhr", "b-mass", "b-crr", "b-cda", "b-eff", "z0-lo", ...[0,1,2,3,4].map((index) => `z${index}-hi`)];
-  fieldIds.forEach((id) => $(`#${id}`)?.addEventListener("input", () => $(`#${id}`).classList.remove("invalid")));
+  view.innerHTML = `    ${pageHeader("Profile & bike")}<section class="form-layout"><article class="card form-card"><div class="form-section"><h3>Rider</h3><div class="form-grid"><label class="form-field"><span>Age</span><input id="r-age" type="number" value="${esc(fmtNumber(rider.age ?? 40, 0))}"></label><label class="form-field"><span>Weight <em>kg</em></span><input id="r-weight" type="number" step=".5" value="${esc(fmtNumber(rider.weight_kg ?? 75, 1))}"></label><label class="form-field"><span>Height <em>cm</em></span><input id="r-height" type="number" step=".5" value="${esc(fmtNumber(rider.height_cm ?? 178, 1))}"></label><label class="form-field"><span>Resting HR <em>bpm</em></span><input id="r-rest" type="number" value="${esc(fmtNumber(rider.resting_hr ?? 55, 0))}"></label><label class="form-field"><span>Max HR <em>bpm</em></span><input id="r-maxhr" type="number" value="${esc(fmtNumber(rider.max_hr ?? 180, 0))}"></label><label class="form-field">Bike type<select id="r-bike">${["road", "gravel", "mountain", "hybrid", "tt"].map((type) => `<option value="${type}" ${rider.bike_type === type ? "selected" : ""}>${type}</option>`).join("")}</select></label><label class="form-field">Sex<select id="r-sex"><option value="" ${rider.sex ? "" : "selected"}>Not set</option><option value="male" ${rider.sex === "male" ? "selected" : ""}>Male</option><option value="female" ${rider.sex === "female" ? "selected" : ""}>Female</option></select><small class="form-field__hint">Drives the heart-rate calorie estimate and TRIMP load.</small></label></div></div><div class="form-section"><h3>Heart-rate zones</h3><p>Edit the boundaries if you know your own zones. They drive TRIMP and fitness/freshness.</p><div class="zone-grid">${[0,1,2,3,4].map((index) => { const zone = zones[index] || { lo: 0, hi: 0 }; const prevHi = index === 0 ? null : (zones[index - 1] || { hi: 0 }).hi; return `<div class="zone"><strong>Z${index + 1}</strong>${index === 0 ? `<input id="z0-lo" type="number" min="30" max="250" value="${esc(fmtNumber(zone.lo, 0))}" aria-label="Zone 1 lower">` : `<span class="zone__inherit" aria-hidden="true">${fmtNumber(prevHi, 0)}</span>`}<span class="zone__dash" aria-hidden="true">to</span><input id="z${index}-hi" type="number" min="30" max="250" value="${esc(fmtNumber(zone.hi, 0))}" aria-label="Zone ${index + 1} upper${index === 0 ? "" : ` (from ${fmtNumber(prevHi, 0)})`}"></div>`; }).join("")}</div></div></article><article class="card form-card"><div class="form-section"><h3>Bike</h3><div class="form-grid form-grid--two"><label class="form-field"><span>Name</span><input id="b-name" type="text" value="${esc(bike.name || "Road bike")}"></label><label class="form-field"><span>Mass <em>kg</em></span><input id="b-mass" type="number" step=".1" value="${esc(fmtNumber(bike.mass_kg ?? 9, 1))}"></label><label class="form-field">Rolling resistance<input id="b-crr" type="number" step=".0001" value="${esc(fmtNumber(bike.crr ?? .005, 4))}" title="Crr — how much the tyres resist rolling. Lower is faster on flats."></label><label class="form-field">Drag area CdA<input id="b-cda" type="number" step=".01" value="${esc(fmtNumber(bike.cdA ?? .35, 2))}" title="CdA = drag coefficient × frontal area. Lower means more aero."></label><label class="form-field">Drivetrain efficiency<input id="b-eff" type="number" step=".01" value="${esc(fmtNumber(bike.drivetrain_efficiency ?? .97, 2))}"></label></div></div><div class="form-section"><div class="calibration-note"><strong>${bike.calibrated ? "Bike calibration is active" : "Default assumptions are active"}</strong>${bike.calibrated ? "Your recent calibration is active." : "A closed loop with coasting descents can fit the bike to your riding."}</div><div class="save-row"><button class="button button--primary" id="save-profile">Save changes</button></div></div></article></section><section class="card card-pad mt-20"><div class="card-title"><div><h2>Calibration</h2></div><button class="button button--primary button--small" id="run-pooled">Run pooled calibration</button></div><details class="calibration-disclosure"><summary>View calibration history</summary><div id="calibration-list"></div></details></section>`;
+  const fieldIds = ["r-age", "r-weight", "r-height", "r-rest", "r-maxhr", "b-name", "b-mass", "b-crr", "b-cda", "b-eff", "z0-lo", ...[0,1,2,3,4].map((index) => `z${index}-hi`)];
+  fieldIds.forEach((id) => $(`#${id}`)?.addEventListener("input", () => {
+    const field = $(`#${id}`);
+    field.classList.remove("invalid");
+    field.setAttribute("aria-invalid", "false");
+  }));
   $("#save-profile").addEventListener("click", async () => {
     const num = (id) => Number($(`#${id}`).value);
-    const checks = [["r-age", num("r-age") >= 13 && num("r-age") <= 100], ["r-weight", num("r-weight") >= 30 && num("r-weight") <= 200], ["r-height", num("r-height") >= 100 && num("r-height") <= 250], ["r-rest", num("r-rest") >= 30 && num("r-rest") <= 120], ["r-maxhr", num("r-maxhr") > num("r-rest") && num("r-maxhr") <= 240], ["b-mass", num("b-mass") > 0 && num("b-mass") <= 50], ["b-crr", num("b-crr") > 0 && num("b-crr") <= .05], ["b-cda", num("b-cda") > 0 && num("b-cda") <= 1.5], ["b-eff", num("b-eff") > 0 && num("b-eff") <= 1]];
-    let invalid = false; checks.forEach(([id, valid]) => { $(`#${id}`).classList.toggle("invalid", !valid); invalid ||= !valid; });
+    const bikeName = $("#b-name").value.trim();
+    const checks = [["r-age", num("r-age") >= 13 && num("r-age") <= 100], ["r-weight", num("r-weight") >= 30 && num("r-weight") <= 200], ["r-height", num("r-height") >= 100 && num("r-height") <= 250], ["r-rest", num("r-rest") >= 30 && num("r-rest") <= 120], ["r-maxhr", num("r-maxhr") > num("r-rest") && num("r-maxhr") <= 240], ["b-name", bikeName.length >= 1 && bikeName.length <= 80], ["b-mass", num("b-mass") > 0 && num("b-mass") <= 50], ["b-crr", num("b-crr") > 0 && num("b-crr") <= .05], ["b-cda", num("b-cda") > 0 && num("b-cda") <= 1.5], ["b-eff", num("b-eff") > 0 && num("b-eff") <= 1]];
+    let invalid = false; checks.forEach(([id, valid]) => {
+      const field = $(`#${id}`);
+      field.classList.toggle("invalid", !valid);
+      field.setAttribute("aria-invalid", String(!valid));
+      invalid ||= !valid;
+    });
     const hrZones = [];
     for (let index = 0; index < 5; index++) {
       const lo = index === 0 ? num("z0-lo") : hrZones[index - 1].hi;
       const hi = num(`z${index}-hi`);
       const valid = Number.isFinite(lo) && Number.isFinite(hi) && lo >= 30 && hi <= 250 && lo < hi;
-      if (index === 0) $(`#z0-lo`).classList.toggle("invalid", !valid);
-      $(`#z${index}-hi`).classList.toggle("invalid", !valid);
+      if (index === 0) {
+        $("#z0-lo").classList.toggle("invalid", !valid);
+        $("#z0-lo").setAttribute("aria-invalid", String(!valid));
+      }
+      const upper = $(`#z${index}-hi`);
+      upper.classList.toggle("invalid", !valid);
+      upper.setAttribute("aria-invalid", String(!valid));
       invalid ||= !valid;
       hrZones.push({ lo, hi });
     }
     if (invalid) { toast("Check the highlighted fields."); return; }
     const saveButton = $("#save-profile"), saveLabel = saveButton.textContent;
     saveButton.disabled = true; saveButton.textContent = "Saving…";
-    try { await api("/api/profile", { method: "PUT", body: { rider: { age: num("r-age"), weight_kg: num("r-weight"), height_cm: num("r-height"), resting_hr: num("r-rest"), max_hr: num("r-maxhr"), bike_type: $("#r-bike").value, sex: $("#r-sex").value || null, hr_zones: hrZones }, bike: { id: bike.id, name: $("#b-name").value, mass_kg: num("b-mass"), crr: num("b-crr"), cdA: num("b-cda"), drivetrain_efficiency: num("b-eff"), calibrated: bike.calibrated } } }); toast("Profile saved and rides recalculated."); } catch (error) { toast(error.message); }
-    saveButton.disabled = false; saveButton.textContent = saveLabel;
+    try { await api("/api/profile", { method: "PUT", body: { rider: { age: num("r-age"), weight_kg: num("r-weight"), height_cm: num("r-height"), resting_hr: num("r-rest"), max_hr: num("r-maxhr"), bike_type: $("#r-bike").value, sex: $("#r-sex").value || null, hr_zones: hrZones }, bike: { id: bike.id, name: bikeName, mass_kg: num("b-mass"), crr: num("b-crr"), cdA: num("b-cda"), drivetrain_efficiency: num("b-eff"), calibrated: bike.calibrated } } }); if (pageIsCurrent(token)) toast("Profile saved and rides recalculated."); } catch (error) { if (pageIsCurrent(token)) toast(error.message); }
+    if (pageIsCurrent(token)) { saveButton.disabled = false; saveButton.textContent = saveLabel; }
   });
-  renderCalibrationList(calibrations);
+  renderCalibrationList(calibrations, calibrationsFailure);
   $("#run-pooled")?.addEventListener("click", async () => {
     const button = $("#run-pooled");
     const label = button.textContent;
     button.disabled = true; button.textContent = "Fitting…";
     try {
       const result = await api("/api/calibrate/pooled", { method: "POST", body: {} });
+      if (!pageIsCurrent(token)) return;
       const c = result.calibration || {};
       toast(`Pooled calibration applied — ${c.n_rides} rides, ${c.n_segments} segments.`);
-      const [calibrations] = await Promise.all([api("/api/calibrations"), refreshBikeFields(bike)]);
+      const [calibrations] = await Promise.all([api("/api/calibrations"), refreshBikeFields(bike, token)]);
+      if (!pageIsCurrent(token)) return;
       renderCalibrationList(calibrations);
     } catch (error) {
-      toast(error.message);
+      if (pageIsCurrent(token)) toast(error.message);
     }
-    button.disabled = false; button.textContent = label;
+    if (pageIsCurrent(token)) { button.disabled = false; button.textContent = label; }
   });
 }
 
-async function refreshBikeFields(bikeRef) {
+async function refreshBikeFields(bikeRef, token) {
   /* After a pooled calibration the bike's Crr/CdA and calibrated flag change
      server-side; keep the Bike form, status note, and the in-memory bike
      object (used by the save handler) in step without losing unsaved edits in
      the other fields. */
   try {
     const { bike } = await api("/api/profile");
+    if (!pageIsCurrent(token)) return;
     const crr = $("#b-crr"), cda = $("#b-cda");
-    if (crr) crr.value = bike.crr;
-    if (cda) cda.value = bike.cdA;
+    if (crr) crr.value = fmtNumber(bike.crr, 4);
+    if (cda) cda.value = fmtNumber(bike.cdA, 2);
     if (bikeRef) {
       bikeRef.crr = bike.crr;
       bikeRef.cdA = bike.cdA;
@@ -1427,35 +1718,45 @@ async function refreshBikeFields(bikeRef) {
     }
     const note = document.querySelector(".calibration-note");
     if (note) {
-      note.innerHTML = `<strong>${bike.calibrated ? "Bike calibration is active" : "Default assumptions are active"}</strong>${bike.calibrated ? "Your recent calibration tightens the uncertainty band where the physics supports it." : "A closed loop with coasting descents can fit Crr and CdA from your own riding."}`;
+      note.innerHTML = `<strong>${bike.calibrated ? "Bike calibration is active" : "Default assumptions are active"}</strong>${bike.calibrated ? "Your recent calibration is active." : "A closed loop with coasting descents can fit the bike to your riding."}`;
     }
   } catch (_) { /* non-fatal: the form is still correct on next page load */ }
 }
 
-function renderCalibrationList(calibrations) {
+function renderCalibrationList(calibrations, failure = null) {
   const list = $("#calibration-list");
   if (!list) return;
+  if (failure) {
+    list.innerHTML = errorState("Calibration history unavailable", "Try again to load the calibration history.", retryAction());
+    return;
+  }
   if (!calibrations.length) {
     list.innerHTML = emptyState("No calibration yet", "Ride a closed loop with coasting descents and the engine will fit Crr and CdA here. Climbs are recorded for visibility only.");
     return;
   }
-  const typeMeta = (type) => type === "loop" ? ["high", "loop"]
-    : type === "pooled" ? ["high", "pooled"] : ["context", "climb · diagnostic"];
-  list.innerHTML = `<div class="table-scroll"><table class="ride-table"><thead><tr><th>Ride</th><th>Type</th><th title="Rolling-resistance coefficient">Crr</th><th title="Drag area — coefficient of drag × frontal area">CdA</th><th title="Fit quality of the calibration">R²</th><th>Segments</th></tr></thead><tbody>${calibrations.map((calibration) => {
-    const [conf, typeLabel] = typeMeta(calibration.type);
+  list.innerHTML = `<div class="table-scroll calibration-table"><table class="ride-table"><thead><tr><th>Ride</th><th>Type</th><th title="Rolling-resistance coefficient">Crr</th><th title="Drag area — coefficient of drag × frontal area">CdA</th><th title="Fit quality of the calibration">R²</th><th>Segments</th></tr></thead><tbody>${calibrations.map((calibration) => {
+    const typeLabel = calibration.type === "loop" ? "loop" : calibration.type === "pooled" ? "pooled" : "climb · diagnostic";
     const ride = calibration.type === "pooled"
       ? `${calibration.params?.n_rides || "—"} rides`
       : esc(calibration.filename || calibration.ride_id);
     const segments = calibration.params?.n_rides
       ? `${calibration.params.n_segments || "—"} · ${calibration.params.n_rides} rides`
       : (calibration.params?.n_segments || "—");
-    return `<tr><td>${ride}</td><td>${confidenceTag(conf, typeLabel)}</td><td class="mono">${calibration.params?.crr ? Number(calibration.params.crr).toFixed(4) : "—"}</td><td class="mono">${calibration.params?.cdA ? Number(calibration.params.cdA).toFixed(2) : "—"}</td><td class="mono">${calibration.r2 != null ? Number(calibration.r2).toFixed(2) : "—"}</td><td class="mono">${segments}</td></tr>`;
+    return `<tr><td>${ride}</td><td>${esc(typeLabel)}</td><td class="mono">${calibration.params?.crr ? Number(calibration.params.crr).toFixed(4) : "—"}</td><td class="mono">${calibration.params?.cdA ? Number(calibration.params.cdA).toFixed(2) : "—"}</td><td class="mono">${calibration.r2 != null ? Number(calibration.r2).toFixed(2) : "—"}</td><td class="mono">${segments}</td></tr>`;
   }).join("")}</tbody></table></div>`;
 }
 
 /* ------------------------------------------------------------------ shell */
 
 function toast(message) { const el = $("#toast"); el.textContent = message; el.hidden = false; clearTimeout(el._timer); el._timer = setTimeout(() => { el.hidden = true; }, 3800); }
-async function updateEngineStatus() { try { const health = await api("/api/health"); const status = $(".engine-status"); if (!status) return; status.classList.remove("offline"); status.innerHTML = `<i class="status-dot"></i><span>${health.rides} ride${health.rides === 1 ? "" : "s"} · local engine</span>`; } catch (_) { const status = $(".engine-status"); if (status) { status.classList.add("offline"); status.innerHTML = `<i class="status-dot"></i><span>Engine offline</span>`; } } }
-async function init() { await updateEngineStatus(); navigate(); }
+function init() {
+  setupMobileNav();
+  document.addEventListener("click", (event) => {
+    const overviewRetry = event.target.closest("[data-retry-overview]");
+    if (overviewRetry) { event.preventDefault(); retryOverview(overviewRetry.dataset.retryOverview, overviewRetry); return; }
+    const retry = event.target.closest("[data-retry-page]");
+    if (retry) { event.preventDefault(); navigate(); }
+  });
+  navigate();
+}
 init();

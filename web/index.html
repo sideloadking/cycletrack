@@ -3,14 +3,14 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#f7f9f7">
-  <meta name="description" content="VeloTrack — a private cycling performance studio for honest ride analysis.">
+  <meta name="theme-color" content="#f4f7f4">
+  <meta name="description" content="VeloTrack — clear, honest cycling performance analysis.">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%231b6f4d'/%3E%3Cpath d='M7 22.5 13.2 8h4.5l-2.5 5.4h7.7l-7.1 9.1h-5.7l2.7-5.7H8.2z' fill='white'/%3E%3C/svg%3E">
-  <title>Cycling Progress Tracker</title>
+  <title>VeloTrack · Cycling analysis</title>
   <!-- impeccable-disable design-system-color -- this SPA shell carries no colors itself; every token lives in /static/style.css, which the static analyzer cannot resolve -->
   <link rel="stylesheet" href="/static/vendor/fonts/fonts.css?v=6">
   <link rel="stylesheet" href="/static/vendor/leaflet/leaflet.css">
-  <link rel="stylesheet" href="/static/style.css?v=46">
+  <link rel="stylesheet" href="/static/style.css?v=58">
 </head>
 <body>
   <svg class="icon-sprite" aria-hidden="true">
@@ -27,6 +27,8 @@
     <symbol id="i-play" viewBox="0 0 24 24"><path d="m9 6 10 6-10 6z" fill="currentColor" stroke="none"/></symbol>
     <symbol id="i-pause" viewBox="0 0 24 24"><path d="M8 6v12M16 6v12"/></symbol>
     <symbol id="i-trash" viewBox="0 0 24 24"><path d="M5 7h14M10 11v6M14 11v6M8 7l1-3h6l1 3m-9 0 1 13h8l1-13"/></symbol>
+    <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></symbol>
   </svg>
 
   <a class="skip-link" href="#view">Skip to content</a>
@@ -49,19 +51,24 @@
 
     <div class="mobile-bar">
       <a class="brand brand--mobile" href="#/dashboard"><span class="brand-mark"><svg viewBox="0 0 28 28" aria-hidden="true"><path d="M5 21.5 11.2 7h4.4l-2.4 5.3h7.8l-7.1 8.2H9.5l2.6-5H7.8z" fill="currentColor"/></svg></span><strong>VeloTrack</strong></a>
-      <a class="mobile-import" href="#/import"><svg class="nav-icon"><use href="#i-plus"/></svg><span>Import</span></a>
+      <div class="mobile-bar__actions"><a class="mobile-import" href="#/import"><svg class="nav-icon"><use href="#i-plus"/></svg><span>Import</span></a><button id="mobile-nav-toggle" class="button button--icon mobile-nav-toggle" type="button" aria-expanded="false" aria-controls="mobile-nav"><svg><use href="#i-menu"/></svg><span>Open navigation</span></button></div>
     </div>
+    <nav id="mobile-nav" class="mobile-nav" aria-label="Mobile primary" hidden>
+      <a href="#/dashboard" data-nav="dashboard"><svg class="nav-icon"><use href="#i-activity"/></svg><span>Overview</span></a>
+      <a href="#/rides" data-nav="rides"><svg class="nav-icon"><use href="#i-rides"/></svg><span>Rides</span></a>
+      <a href="#/routes" data-nav="routes"><svg class="nav-icon"><use href="#i-route"/></svg><span>Routes</span></a>
+      <a href="#/records" data-nav="records"><svg class="nav-icon"><use href="#i-award"/></svg><span>Records</span></a>
+      <a href="#/import" data-nav="import"><svg class="nav-icon"><use href="#i-upload"/></svg><span>Import rides</span></a>
+      <a href="#/profile" data-nav="profile"><svg class="nav-icon"><use href="#i-sliders"/></svg><span>Profile &amp; bike</span></a>
+    </nav>
 
     <main class="main-content">
-      <header class="topbar">
-        <div class="topbar-actions" id="topbar-actions"><span class="engine-status"><i class="status-dot"></i><span>Local engine</span></span><a class="button button--primary button--small" href="#/import" aria-label="Import ride"><svg><use href="#i-plus"/></svg>Import ride</a></div>
-      </header>
       <div id="view" class="view" tabindex="-1"></div>
     </main>
   </div>
 
   <div id="toast" class="toast" hidden role="status" aria-live="polite"></div>
   <script src="/static/vendor/leaflet/leaflet.js"></script>
-  <script src="/static/app.js?v=49"></script>
+  <script src="/static/app.js?v=62"></script>
 </body>
 </html>
