@@ -1239,7 +1239,14 @@ function setupDescentTags(rideId, descents, gps, map, seek) {
     listEl.innerHTML = descents.map((descent, index) => {
       const rel = (t) => fmtDuration(Math.max(0, t - t0));
       const meta = descent.source === "manual" ? "your tag" : descent.score != null ? `auto · ${Math.round(descent.score * 100)}% coast` : "auto";
-      return `<div class="list-row"><div class="list-row__main descents__seek" data-index="${index}" role="button" tabindex="0"><strong>${esc(descentLabelText(descent))}</strong><small>${esc(rel(descent.t_start))} – ${esc(rel(descent.t_end))} · ${esc(meta)}</small></div><div class="segmented descents__tags" role="group" aria-label="Tag this descent"><button data-tag="coast" class="${descent.label === "coast" ? "active" : ""}">Freewheeled</button><button data-tag="pedal" class="${descent.label === "pedal" ? "active" : ""}">Pedalled</button><button data-tag="brake" class="${descent.label === "brake" ? "active" : ""}">Braked</button><button data-tag="clear" class="${descent.source === "auto" ? "active" : ""}">Auto</button></div></div>`;
+      // Exactly one button is ever highlighted: the chosen tag for a manual
+      // tag, or Auto (labelled with the classifier's verdict) for an
+      // untagged descent — so an auto-classified coast reads as the Auto
+      // button's choice, not as two selections at once.
+      const autoVerdict = (descent.source === "auto" && ["coast", "pedal", "brake"].includes(descent.label))
+        ? ` · ${esc(descentLabelText(descent))}` : "";
+      const manualActive = (tag) => (descent.source === "manual" && descent.label === tag) ? "active" : "";
+      return `<div class="list-row"><div class="list-row__main descents__seek" data-index="${index}" role="button" tabindex="0"><strong>${esc(descentLabelText(descent))}</strong><small>${esc(rel(descent.t_start))} – ${esc(rel(descent.t_end))} · ${esc(meta)}</small></div><div class="segmented descents__tags" role="group" aria-label="Tag this descent"><button data-tag="coast" class="${manualActive("coast")}">Freewheeled</button><button data-tag="pedal" class="${manualActive("pedal")}">Pedalled</button><button data-tag="brake" class="${manualActive("brake")}">Braked</button><button data-tag="clear" class="${descent.source === "auto" ? "active" : ""}">Auto${autoVerdict}</button></div></div>`;
     }).join("");
 
     $$(".descents__seek", listEl).forEach((node) => {
@@ -1256,14 +1263,23 @@ function setupDescentTags(rideId, descents, gps, map, seek) {
     $$(".descents__tags", listEl).forEach((group) => {
       const descent = descents[+group.closest(".list-row").querySelector(".descents__seek").dataset.index];
       $$("button", group).forEach((button) => button.addEventListener("click", async () => {
+        if (group.dataset.busy) return; // one save in flight per descent
+        group.dataset.busy = "1";
         const label = button.dataset.tag === "clear" ? null : button.dataset.tag;
-        button.disabled = true;
+        // Optimistic feedback: highlight the choice immediately so a slow
+        // save never looks dead; the CSS dims the disabled group while it
+        // saves (label text is left alone so the pill never shifts width).
+        group.querySelectorAll("button").forEach((b) => { b.disabled = true; b.classList.remove("active"); });
+        button.classList.add("active");
         try {
           await api(`/api/rides/${rideId}/coast_segments`, { method: "POST", body: { t_start: descent.t_start, t_end: descent.t_end, label } });
           toast(label ? `${descentLabelText({ label })} tag saved.` : "Tag cleared — back to auto.");
           await refresh();
-        } catch (error) { toast(error.message); }
-        button.disabled = false;
+        } catch (error) {
+          toast(error.message);
+          try { await refresh(); } catch (_) { redraw(); } // revert the optimistic state
+        }
+        delete group.dataset.busy;
       }));
     });
   }

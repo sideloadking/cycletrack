@@ -203,9 +203,14 @@ svg { display: block; }
 .chart--small { height: 285px; }
 .chart-card .chart { margin-top: 4px; }
 .segmented { display: inline-flex; align-items: center; gap: 3px; padding: 3px; background: var(--surface-soft); border: 1px solid var(--line); border-radius: 9px; }
-.segmented button { min-height: 32px; padding: 6px 11px; color: var(--muted); background: transparent; border: 0; border-radius: 7px; font: 600 12px/18px var(--font-data); cursor: pointer; }
+.segmented button { min-height: 32px; padding: 6px 11px; color: var(--muted); background: transparent; border: 0; border-radius: 7px; font: 600 12px/18px var(--font-data); cursor: pointer; transition: color 0.12s ease, background-color 0.12s ease, opacity 0.12s ease; }
 .segmented button:hover { color: var(--green-deep); }
 .segmented button.active { color: var(--green-deep); background: var(--white); }
+/* While a descent tag is saving, the whole group locks: the chosen button
+   stays bright and the rest dim, so "in progress" reads at a glance without
+   any label text changing (which would shift the pill's width). */
+.segmented button:disabled { opacity: 0.45; cursor: wait; }
+.segmented button:disabled.active { opacity: 1; }
 .chart-legend { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; color: var(--muted); font-size: 12px; }
 .legend-item { display: inline-flex; align-items: center; gap: 6px; }
 .legend-swatch { width: 18px; height: 3px; border-radius: 4px; background: var(--green); }

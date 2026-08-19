@@ -30,6 +30,70 @@ app = FastAPI(title="Cycling Progress Tracker", version="0.1.0")
 _jobs = {}
 _jobs_lock = threading.Lock()
 
+# ---------------------------------------------------------------------------
+# Coalesced background recalibration
+# ---------------------------------------------------------------------------
+# Every coast-tag save changes the pool of trusted coasts, so it should
+# re-run the cross-ride pooled fit (shared Crr/CdA + per-ride wind). That fit
+# is tens of seconds of CPU, so it must never stack: a burst of tag clicks
+# used to spawn one concurrent fit per click, saturating the CPU and freezing
+# the UI. This schedules at most one running fit plus one debounced re-run.
+
+_pool_lock = threading.Lock()
+_pool_timer = None      # debounce Timer, or None when idle
+_pool_running = False
+_pool_pending = False
+
+
+def _run_pooled_pass(rider, bike):
+    """One full cross-ride recalibration pass (best effort)."""
+    if len(storage.list_rides()) > config.POOLED_AUTO_MAX_RIDES:
+        return
+    pooled = pipeline.try_pooled_calibrate(rider, bike)
+    if pooled:
+        fresh_rider, fresh_bike = storage.get_profile()
+        pipeline.recalculate_rides(fresh_rider or rider, fresh_bike or bike)
+
+
+def _pool_worker(rider, bike):
+    global _pool_running, _pool_pending, _pool_timer
+    with _pool_lock:
+        _pool_timer = None
+        if _pool_running:
+            _pool_pending = True
+            return
+        _pool_running = True
+    try:
+        while True:
+            try:
+                _run_pooled_pass(rider, bike)
+            except Exception:
+                import traceback
+                traceback.print_exc()
+            with _pool_lock:
+                if not _pool_pending:
+                    _pool_running = False
+                    return
+                _pool_pending = False
+    except Exception:
+        with _pool_lock:
+            _pool_running = False
+            _pool_pending = False
+
+
+def _schedule_pooled_recalibration(rider, bike):
+    """Debounce + single-flight the pooled fit: a burst of tag saves becomes
+    one background fit (plus at most one follow-up for changes that arrived
+    while it was running)."""
+    global _pool_timer
+    with _pool_lock:
+        if _pool_timer is not None:
+            _pool_timer.cancel()
+        _pool_timer = threading.Timer(
+            config.POOLED_DEBOUNCE_S, _pool_worker, args=(rider, bike))
+        _pool_timer.daemon = True
+        _pool_timer.start()
+
 
 def _job(job_id, **updates):
     with _jobs_lock:
@@ -358,15 +422,9 @@ def save_coast_tag(ride_id: int, payload: dict = Body(...)):
     t_end = float(payload.get("t_end", 0.0))
     label = payload.get("label")
 
-    manual = [s for s in storage.get_coast_segments(ride_id)
-              if s.get("source") == "manual"]
-    manual = [s for s in manual
-              if not (abs(s["t_start"] - t_start) < 2.0
-                      and abs(s["t_end"] - t_end) < 2.0)]
-    if label in ("coast", "pedal", "brake"):
-        manual.append({"t_start": t_start, "t_end": t_end, "label": label,
-                       "source": "manual", "score": None})
-    storage.save_coast_segments(ride_id, manual)
+    # Atomic read-modify-write under the storage lock so rapid clicks cannot
+    # interleave and lose updates (each click applies to the latest state).
+    storage.merge_coast_tag(ride_id, t_start, t_end, label)
 
     # Re-run calibration with the updated trust set, exactly like the manual
     # /api/calibrate path but with the tags applied to the records.
@@ -400,19 +458,10 @@ def save_coast_tag(ride_id: int, payload: dict = Body(...)):
 
     # A tag changes the pool of trusted coasts, so refresh the cross-ride fit
     # too and let every ride re-apply its own recovered wind + pedal tags.
-    # The pooled Nelder-Mead + full recalculation is slow, so run it off the
-    # request thread — the tag and this ride's loop re-fit above are already
-    # done synchronously, and storage access is serialised by the module lock.
-    def _repool():
-        try:
-            if len(storage.list_rides()) <= config.POOLED_AUTO_MAX_RIDES:
-                pooled = pipeline.try_pooled_calibrate(rider, bike)
-                if pooled:
-                    fresh_rider, fresh_bike = storage.get_profile()
-                    pipeline.recalculate_rides(fresh_rider or rider, fresh_bike or bike)
-        except Exception:
-            pass
-    threading.Thread(target=_repool, daemon=True).start()
+    # The pooled Nelder-Mead + full recalculation is slow, so it runs off the
+    # request thread, debounced and single-flight: a burst of tag clicks
+    # becomes one background fit instead of one concurrent fit per click.
+    _schedule_pooled_recalibration(rider, bike)
 
     return {"ok": True, "descents": ride_descents(ride_id)["descents"]}
 

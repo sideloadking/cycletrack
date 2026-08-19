@@ -159,6 +159,11 @@ DRIFT_CV_SPEED = 0.35         # max coefficient of variation of speed
 # history is small (the Nelder-Mead fit + full recalculation grows with the
 # ride count). The manual "Run pooled calibration" button always works.
 POOLED_AUTO_MAX_RIDES = 50
+# Debounce for the background pooled fit: a burst of tag saves within this
+# window coalesces into a single fit (single-flight on top keeps at most one
+# fit running plus one follow-up). The fit is tens of seconds of CPU, so it
+# must never run once per click.
+POOLED_DEBOUNCE_S = 1.5
 
 # Weather: Open-Meteo archive (no API key), used for air density + wind.
 OPEN_METEO_ARCHIVE = "https://archive-api.open-meteo.com/v1/archive"

@@ -695,7 +695,7 @@ def calibrate_pooled(segments_by_ride, rider, bike, weather_by_ride):
         best = None
         for seed in seeds:
             res = minimize(cost, seed, method="Nelder-Mead",
-                           options={"maxiter": 200, "xatol": 1e-3, "fatol": 1e-8})
+                           options={"maxiter": 60, "xatol": 2e-3, "fatol": 1e-6})
             if best is None or res.fun < best.fun:
                 best = res
         return best
@@ -727,7 +727,7 @@ def calibrate_pooled(segments_by_ride, rider, bike, weather_by_ride):
     best = None
     for seed in outer_seeds:
         res = minimize(_pooled_cost, seed, method="Nelder-Mead",
-                       options={"maxiter": 300, "xatol": 1e-4, "fatol": 1e-8})
+                       options={"maxiter": 120, "xatol": 5e-4, "fatol": 1e-6})
         if best is None or res.fun < best.fun:
             best = res
     crr = float(best.x[0])

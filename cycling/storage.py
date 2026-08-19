@@ -564,6 +564,40 @@ def save_coast_segments(ride_id, segments):
         conn.commit()
 
 
+def merge_coast_tag(ride_id, t_start, t_end, label):
+    """Atomically add or clear one manual coast tag.
+
+    The read-modify-write (fetch manual tags, drop any overlapping the
+    clicked descent, append the new tag or clear) happens under the storage
+    lock, so rapid clicks cannot interleave and lose updates: each click
+    applies to the latest state instead of a stale snapshot.
+    """
+    with _lock:
+        conn = _connect()
+        manual = [dict(r) for r in conn.execute(
+            "SELECT t_start, t_end, label, source, score FROM coast_segment "
+            "WHERE ride_id = ? AND source = 'manual'", (ride_id,))]
+        manual = [s for s in manual
+                  if not (abs(s["t_start"] - t_start) < 2.0
+                          and abs(s["t_end"] - t_end) < 2.0)]
+        if label in ("coast", "pedal", "brake"):
+            manual.append({"t_start": t_start, "t_end": t_end, "label": label,
+                           "source": "manual", "score": None})
+        conn.execute("DELETE FROM coast_segment WHERE ride_id = ?", (ride_id,))
+        conn.executemany(
+            """INSERT INTO coast_segment
+               (ride_id, t_start, t_end, label, source, score, created_at)
+               VALUES (?,?,?,?,?,?,?)""",
+            [
+                (ride_id, s["t_start"], s["t_end"], s["label"],
+                 s.get("source", "manual"), s.get("score"), _now())
+                for s in manual
+            ],
+        )
+        conn.commit()
+    return manual
+
+
 # ---------------------------------------------------------------------------
 # Routes (repeated-route grouping)
 # ---------------------------------------------------------------------------
