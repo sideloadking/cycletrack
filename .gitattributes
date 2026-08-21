@@ -1,0 +1,20 @@
+# Normalize line endings: text files are stored with LF and checked out
+# with LF, matching the existing working tree on every platform.
+* text=auto eol=lf
+
+# Windows scripts need CRLF for cmd.exe / PowerShell 5.1 edge cases.
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+
+# Binary assets — never normalize or diff these.
+*.fit binary
+*.tif binary
+*.tiff binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.db binary

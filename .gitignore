@@ -23,4 +23,9 @@ tauri/src-tauri/gen/
 
 # Preview / agent transient state
 .freebuff/
-.claude/skills/impeccable/node_modules/
+
+# Dogfooding / QA artifacts (screenshots, probe scripts, reports)
+dogfood-output/
+
+# DeepSeek Harness source install (nested repo)
+dseek/
