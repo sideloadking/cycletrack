@@ -61,13 +61,39 @@ def _local(lat0, lon0, pts):
 
 
 def _nearest_stats(xa, ya, xb, yb):
-    """(mean, p95) of the distance from each point of A to the nearest point of B."""
+    """(mean, p95) of the distance from each point of A to the nearest
+    *segment* of B's polyline.
+
+    Point-to-segment (not point-to-point) matters because both fingerprints
+    are resampled by distance from each ride's own start: the same loop
+    started at a different corner produces two grids offset along the track,
+    and nearest-point distance grows with that offset (up to half the ~length/120
+    grid spacing) even though the roads are identical. Measuring to B's
+    chords instead collapses that offset to the chords' sagitta (~1 m at
+    loop scale), so grouping no longer depends on where along the loop a
+    ride happened to start.
+    """
     n = len(xa)
     if n == 0:
         return 0.0, 0.0
-    d = np.empty(n, dtype=float)
-    for i in range(n):
-        d[i] = float(np.min(np.hypot(xa[i] - xb, ya[i] - yb)))
+    if len(xb) < 2:
+        d = np.array([float(np.min(np.hypot(x - xb[0], y - yb[0])))
+                      for x, y in zip(xa, ya)])
+        return float(d.mean()), float(np.percentile(d, 95))
+
+    ax = np.asarray(xa, dtype=float)[:, None]
+    ay = np.asarray(ya, dtype=float)[:, None]
+    x0 = np.asarray(xb[:-1], dtype=float)[None, :]
+    y0 = np.asarray(yb[:-1], dtype=float)[None, :]
+    ex = (np.asarray(xb[1:], dtype=float) - np.asarray(xb[:-1], dtype=float))[None, :]
+    ey = (np.asarray(yb[1:], dtype=float) - np.asarray(yb[:-1], dtype=float))[None, :]
+
+    l2 = ex * ex + ey * ey
+    l2 = np.where(l2 > 0.0, l2, 1e-12)
+    t = np.clip(((ax - x0) * ex + (ay - y0) * ey) / l2, 0.0, 1.0)
+    dx = ax - (x0 + t * ex)
+    dy = ay - (y0 + t * ey)
+    d = np.sqrt(dx * dx + dy * dy).min(axis=1)
     return float(d.mean()), float(np.percentile(d, 95))
 
 

@@ -16,14 +16,23 @@ DEFAULT_PORT = 8347
 
 
 def pick_port(preferred):
+    """Bind a free port and return the bound socket plus its port number.
+
+    The socket stays bound and is handed directly to uvicorn, so there is no
+    check-then-use window in which another process could claim the port —
+    the old bind-close-rebind dance could lose the race and crash at startup.
+    """
     for port in range(preferred, preferred + 50):
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            try:
-                s.bind(("127.0.0.1", port))
-                return port
-            except OSError:
-                continue
-    return preferred
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            s.bind(("127.0.0.1", port))
+            return s, port
+        except OSError:
+            s.close()
+    raise SystemExit(
+        f"No free port between {preferred} and {preferred + 49}; "
+        f"is another instance already running?"
+    )
 
 
 def main():
@@ -36,7 +45,7 @@ def main():
     _ensure_profile()
     storage.recompute_routes()
 
-    port = pick_port(args.port)
+    sock, port = pick_port(args.port)
     url = f"http://127.0.0.1:{port}"
 
     if not args.no_browser:
@@ -47,7 +56,8 @@ def main():
 
     print(f"{config.APP_NAME} — {url}")
     print(f"Data: {config.DB_PATH}")
-    uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")
+    server = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning")
+    uvicorn.Server(server).run(sockets=[sock])
 
 
 def _ensure_profile():

@@ -23,6 +23,26 @@ WEB_DIR = pathlib.Path(__file__).resolve().parent.parent / "web"
 
 app = FastAPI(title="Cycling Progress Tracker", version="0.1.0")
 
+
+def _host_allowed(host):
+    """Whether a request Host header value names this machine."""
+    host = (host or "").rsplit(":", 1)[0].strip("[]").lower()
+    return host in ("127.0.0.1", "localhost", "::1")
+
+
+@app.middleware("http")
+async def _local_host_only(request, call_next):
+    """Reject requests whose Host header is not this machine.
+
+    The engine binds 127.0.0.1, but a public web page can still reach it via
+    DNS rebinding (resolving a hostile name to 127.0.0.1) and then read the
+    ride API from the victim's browser. Checking Host closes that route;
+    direct local access always sends 127.0.0.1 / localhost.
+    """
+    if not _host_allowed(request.headers.get("host")):
+        return JSONResponse({"error": "forbidden host"}, status_code=403)
+    return await call_next(request)
+
 # ---------------------------------------------------------------------------
 # Job queue
 # ---------------------------------------------------------------------------
@@ -111,6 +131,20 @@ def _job(job_id, **updates):
 
 # Upload guard: a .fit file is a few hundred kB; 64 MB is generous.
 MAX_UPLOAD_BYTES = 64 * 1024 * 1024
+
+
+def _safe_upload_name(name):
+    """Reduce a client-supplied filename to a bare, safe basename.
+
+    The name is joined under IMPORT_DIR with a job-id prefix, so path
+    separators (or a Windows drive) in it would otherwise write the upload
+    anywhere on disk. Strip every directory component, then trim dots so
+    the result cannot be "." / ".." or a hidden dotfile.
+    """
+    if not isinstance(name, str):
+        return "ride.fit"
+    name = pathlib.Path(name.replace("\\", "/")).name.strip().strip(".")
+    return name[:120] or "ride.fit"
 
 
 def _prune_import_dir():
@@ -229,7 +263,7 @@ def import_files(payload: dict = Body(...)):
     job_ids = []
     _prune_import_dir()
     for item in files:
-        name = item.get("name", "ride.fit")
+        name = _safe_upload_name(item.get("name", "ride.fit"))
         raw = item.get("data", "")
         if not raw:
             continue

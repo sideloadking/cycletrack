@@ -174,14 +174,16 @@ def _normalised_power(w, ts):
     n = len(w)
     if n < 2:
         return 0.0
-    # Coggan normalised power: a 30 s rolling *time* mean of power, raised to
-    # the 4th power, averaged over time, then the 4th root. Smoothing comes
-    # BEFORE the 4th power (not after): NP should emphasise sustained surges,
-    # not single-second spikes. The window is time-based so "30 s" stays
-    # meaningful across FIT gaps and the pedalling-time rebase in _power_metrics.
+    # Coggan normalised power: a trailing 30 s rolling *time* mean of power,
+    # raised to the 4th power, averaged over time, then the 4th root.
+    # Smoothing comes BEFORE the 4th power (not after): NP should emphasise
+    # sustained surges, not single-second spikes. The window trails each
+    # sample (Coggan's definition) rather than straddling it, and it is
+    # time-based so "30 s" stays meaningful across FIT gaps and the
+    # pedalling-time rebase in _power_metrics.
     w = np.asarray(w, dtype=float)
     ts = np.asarray(ts, dtype=float)
-    w_smooth = _rolling_mean_time(ts, w, 30.0)
+    w_smooth = _rolling_mean_time(ts, w, 30.0, centered=False)
     w4 = w_smooth ** 4
     if ts[-1] <= ts[0]:
         return float(np.mean(w4) ** 0.25)
@@ -254,7 +256,7 @@ def _watts_at_fixed_hr(watts, hrs, confidence, mode):
     # Robust fit: a few mis-estimated points (gust noise) must not drag the
     # slope; IRLS downweights the worst residuals.
     from . import power as power_mod
-    slope, intercept = power_mod._irls_solve(A, y)
+    slope, intercept = power_mod.irls_solve(A, y)
     pred = A @ np.array([slope, intercept])
     ss_res = float(np.sum((y - pred) ** 2))
     ss_tot = float(np.sum((y - y.mean()) ** 2)) or 1e-9
@@ -279,33 +281,39 @@ def _watts_at_fixed_hr(watts, hrs, confidence, mode):
 # Cardiac drift
 # ---------------------------------------------------------------------------
 
-def _rolling_mean_time(ts, values, window_s):
+def _rolling_mean_time(ts, values, window_s, centered=True):
     """Trapezoid-weighted rolling mean over a fixed time window (robust to
-    irregular sampling). Returns a smoothed copy of ``values``."""
+    irregular sampling). Returns a smoothed copy of ``values``.
+
+    ``centered=True`` straddles each sample (+/- window/2) — right for
+    smoothing a signal in place (cardiac drift). ``centered=False`` trails
+    each sample (window ends at it) — the Coggan normalized-power window.
+    """
     values = np.asarray(values, dtype=float)
     n = len(values)
     if n == 0:
         return values.copy()
-    half = window_s / 2.0
+    half = window_s / 2.0 if centered else window_s
     out = np.empty(n, dtype=float)
-    # Cumulative integrals of value and 1 over time, padded by repeating the
-    # final value so cum[i+1] - cum[j] is the integral over points j..i even
-    # when the window ends at the last point.
+    # cum_v[k] / cum_t[k] integrate value and time from point 0 to point k,
+    # so an inclusive window over point indices [lo, hi] is
+    # (cum_v[hi] - cum_v[lo]) / (cum_t[hi] - cum_t[lo]). (The window edges
+    # fall back to the nearest whole segment; a previous version indexed
+    # hi+1 here, integrating one segment past the window's right edge.)
     dt = np.diff(ts)
     v_mid = 0.5 * (values[:-1] + values[1:])
     cum_v = np.concatenate(([0.0], np.cumsum(dt * v_mid)))
     cum_t = np.concatenate(([0.0], np.cumsum(dt)))
-    cum_v = np.concatenate((cum_v, [cum_v[-1]]))
-    cum_t = np.concatenate((cum_t, [cum_t[-1]]))
     for i in range(n):
         lo = np.searchsorted(ts, ts[i] - half, side="left")
-        hi = np.searchsorted(ts, ts[i] + half, side="right") - 1
+        hi = (np.searchsorted(ts, ts[i] + half, side="right") - 1
+              if centered else i)
         lo, hi = max(0, lo), min(n - 1, hi)
-        span_t = cum_t[hi + 1] - cum_t[lo]
+        span_t = cum_t[hi] - cum_t[lo]
         if span_t <= 0:
             out[i] = values[i]
         else:
-            out[i] = (cum_v[hi + 1] - cum_v[lo]) / span_t
+            out[i] = (cum_v[hi] - cum_v[lo]) / span_t
     return out
 
 
@@ -462,7 +470,7 @@ def _climb_metrics(records):
         {"from": round(edges[i], 1), "to": round(edges[i + 1], 1), "count": int(hist[i])}
         for i in range(len(hist))
     ]
-    return {"vam_mph": vam, "grade_distribution": distribution}
+    return {"vam_mh": vam, "grade_distribution": distribution}
 
 
 # ---------------------------------------------------------------------------
@@ -660,7 +668,7 @@ def compute_ride_metrics(records, rider, bike, elev_summary, meta):
         "has_hr": has_hr,
         "trimp": hr["trimp"],
         "time_in_zone": hr["time_in_zone"],
-        "vam_mph": climb["vam_mph"],
+        "vam_mh": climb["vam_mh"],
         "grade_distribution": climb["grade_distribution"],
         "avg_watts": power["avg_watts"],
         "avg_watts_lo": power["avg_watts_lo"],

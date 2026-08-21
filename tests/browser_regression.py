@@ -17,17 +17,38 @@ from __future__ import annotations
 import base64
 import json
 import threading
+import time
 from collections import Counter
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from playwright.sync_api import Page, sync_playwright
+from playwright.sync_api import Locator, Page, sync_playwright
 
 
 ROOT = Path(__file__).resolve().parents[1]
 WEB = ROOT / "web"
 RIDE_ID = 42
+
+
+def stable_bounding_box(locator: Locator, timeout_s: float = 5.0) -> dict | None:
+    """bounding_box() that survives an innerHTML re-render racing the query.
+
+    The descents list is rebuilt wholesale after a tag save; a plain
+    bounding_box() can land inside that swap and return None for a
+    just-detached node. Poll until the box is measurable and identical on
+    two consecutive reads (i.e. the node is no longer being replaced).
+    """
+    deadline = time.monotonic() + timeout_s
+    box = None
+    while True:
+        candidate = locator.bounding_box()
+        if candidate is not None and candidate == box:
+            return candidate
+        box = candidate
+        if time.monotonic() >= deadline:
+            return box
+        locator.page.wait_for_timeout(50)
 STARTED_AT = 1_735_689_600
 
 
@@ -403,7 +424,8 @@ def test_descent_review(page: Page, backend: MockApi, base_url: str):
     group.locator("button[data-value='pedal'].active").wait_for(state="visible")
     after_group = page.locator("#descents-list .descent-tags").nth(1)
     after_group.wait_for(state="visible")
-    after_box = after_group.bounding_box()
+    after_box = stable_bounding_box(after_group)
+    assert after_box is not None, "descent tag group never became measurable"
     after_button_widths = after_group.locator("button").evaluate_all("els => els.map(el => el.getBoundingClientRect().width)")
     assert abs(after_box["width"] - before_width) < 1
     assert abs(after_box["height"] - before_height) < 1

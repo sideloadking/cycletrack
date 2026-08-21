@@ -8,10 +8,18 @@ gracefully; the only hard failures are "not a FIT file" and "no GPS points".
 import hashlib
 import math
 import pathlib
+import threading
 import time
 
 from . import coast as coast_mod, config, elevation, geo, metrics as metrics_mod
 from . import power as power_mod, storage, weather as weather_mod
+
+# Only one pooled cross-ride fit may run at a time. The fit is tens of
+# seconds of CPU; without this, an import's inline pooled pass and the
+# server's debounced background pass could overlap and stack on the CPU.
+# (Storage has its own lock, so ordering pooled-lock -> storage-lock is safe:
+# nothing ever acquires the pooled lock while holding the storage lock.)
+_pooled_fit_lock = threading.Lock()
 
 
 def file_hash(path):
@@ -259,20 +267,26 @@ def collect_coast_segments_by_ride(rider):
 def try_pooled_calibrate(rider, bike):
     """Fit a shared Crr/CdA + per-ride wind across every ride's trusted
     coasts and apply it when accepted. Returns the pooled dict or None when
-    the pool is insufficient (fall back to the single-ride loop fit)."""
-    segments_by_ride = collect_coast_segments_by_ride(rider)
-    if len(segments_by_ride) < 2:
-        return None
-    weather_by_ride = {}
-    for ride_id in segments_by_ride:
-        ride = storage.get_ride(ride_id)
-        weather_by_ride[ride_id] = (ride or {}).get("weather") or {}
-    pooled = power_mod.calibrate_pooled(
-        segments_by_ride, rider, bike, weather_by_ride)
-    if not _acceptable_pooled(pooled):
-        return None
-    _save_pooled_calibration(pooled)
-    return pooled
+    the pool is insufficient (fall back to the single-ride loop fit).
+
+    Serialized: an import thread and the server's debounced background
+    worker can both reach this, and the Nelder-Mead fit is heavy enough
+    that two concurrent runs would saturate the machine.
+    """
+    with _pooled_fit_lock:
+        segments_by_ride = collect_coast_segments_by_ride(rider)
+        if len(segments_by_ride) < 2:
+            return None
+        weather_by_ride = {}
+        for ride_id in segments_by_ride:
+            ride = storage.get_ride(ride_id)
+            weather_by_ride[ride_id] = (ride or {}).get("weather") or {}
+        pooled = power_mod.calibrate_pooled(
+            segments_by_ride, rider, bike, weather_by_ride)
+        if not _acceptable_pooled(pooled):
+            return None
+        _save_pooled_calibration(pooled)
+        return pooled
 
 
 def _acceptable_pooled(calib):

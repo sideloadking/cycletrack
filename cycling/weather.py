@@ -8,8 +8,9 @@ aborts an import.
 
 import datetime
 import json
-import math
 import statistics
+import threading
+import time
 
 import requests
 
@@ -27,8 +28,45 @@ _DEFAULTS = {
 # (pressure_hpa switched from surface_pressure to pressure_msl, and the
 # ride-local date/hour became timezone-aware; then wind switched from
 # Open-Meteo's default km/h to m/s): the on-disk cache must not re-serve
-# old entries under their previous semantics.
-_CACHE_VERSION = "v3"
+# old entries under their previous semantics. v4 wraps each entry with a
+# fetch timestamp so failed fetches can be retried instead of cached forever.
+_CACHE_VERSION = "v4"
+
+# A failed or empty fetch ("defaults") used to be cached permanently, so a
+# ride imported while offline — or within the archive's ~2-5 day publication
+# delay — kept its placeholder weather forever. Failed entries now expire so
+# they are retried on a later import.
+_FAILED_RETRY_S = 6 * 3600
+# Recent ride dates may not be in the archive yet even when the request
+# succeeds (Open-Meteo fills them in later); re-check those hourly.
+_RECENT_RETRY_S = 1 * 3600
+# Ride dates within this many days of today are treated as "may backfill".
+_RECENT_WINDOW_DAYS = 6
+
+_cache_lock = threading.Lock()
+
+
+def _now():
+    return time.time()
+
+
+def _entry_stale(entry):
+    """Whether a cache entry should be refetched.
+
+    Good archive data never expires; entries that fell back to defaults are
+    retried after ``_FAILED_RETRY_S``; entries for ride dates still inside
+    the archive's publication window are retried after ``_RECENT_RETRY_S``
+    because Open-Meteo may have backfilled the day since.
+    """
+    if not isinstance(entry, dict) or "data" not in entry:
+        return True  # foreign or pre-v4 entry: refetch
+    age = _now() - float(entry.get("fetched_at") or 0.0)
+    data = entry.get("data") or {}
+    if data.get("source") != "open-meteo":
+        return age >= _FAILED_RETRY_S
+    if entry.get("recent_day"):
+        return age >= _RECENT_RETRY_S
+    return False
 
 
 def _cache():
@@ -121,10 +159,11 @@ def fetch_weather(lat, lon, when_unix):
     except (TypeError, ValueError, OSError):
         return dict(_DEFAULTS)
 
-    cache = _cache()
-    key = f"{_CACHE_VERSION}:{lat:.3f},{lon:.3f},{when:%Y-%m-%d}"
-    if key in cache:
-        return cache[key]
+    cache_key = f"{_CACHE_VERSION}:{lat:.3f},{lon:.3f},{when:%Y-%m-%d}"
+    with _cache_lock:
+        cached = _cache().get(cache_key)
+    if cached is not None and not _entry_stale(cached):
+        return dict(cached["data"])
 
     result = dict(_DEFAULTS)
     try:
@@ -195,25 +234,40 @@ def fetch_weather(lat, lon, when_unix):
         if wind_sigma is not None:
             result["wind_sigma_mps"] = wind_sigma
         # The full hourly series lets the power stage interpolate the wind
-        # across a long ride instead of holding the start-hour value.
-        spd = [float(x) for x in (data.get("wind_speed_10m") or []) if x is not None]
-        drc = [float(x) for x in (data.get("wind_direction_10m") or []) if x is not None]
-        if spd and drc:
-            result["wind_speed_hourly"] = spd
-            result["wind_dir_hourly"] = drc
+        # across a long ride instead of holding the start-hour value. Speed
+        # and direction are filtered *jointly* so entry i of both lists always
+        # refers to the same hour: dropping each list's Nones independently
+        # used to shift one series relative to the other whenever Open-Meteo
+        # left a hole in only one of them.
+        pairs = [
+            (float(s), float(d))
+            for s, d in zip(data.get("wind_speed_10m") or [],
+                            data.get("wind_direction_10m") or [])
+            if s is not None and d is not None
+        ]
+        if pairs:
+            result["wind_speed_hourly"] = [p[0] for p in pairs]
+            result["wind_dir_hourly"] = [p[1] for p in pairs]
         result["ride_hour"] = int(when.hour)
     except Exception:
         result = dict(_DEFAULTS)
 
-    cache[key] = result
-    _save_cache(cache)
+    # Ride dates still inside the archive's publication window are marked so
+    # the entry is re-checked (and backfilled) on later imports.
+    try:
+        ride_utc_day = datetime.datetime.fromtimestamp(
+            when_unix, tz=datetime.timezone.utc).date()
+        today = datetime.datetime.now(datetime.timezone.utc).date()
+        recent_day = (today - ride_utc_day).days <= _RECENT_WINDOW_DAYS
+    except (OverflowError, OSError, ValueError):
+        recent_day = False
+
+    with _cache_lock:
+        cache = _cache()
+        cache[cache_key] = {
+            "data": result,
+            "fetched_at": _now(),
+            "recent_day": recent_day,
+        }
+        _save_cache(cache)
     return result
-
-
-def air_density(weather):
-    """Air density (kg/m^3) from temperature and pressure."""
-    temp_c = float(weather.get("temp_c", _DEFAULTS["temp_c"]))
-    pressure_pa = float(weather.get("pressure_hpa", _DEFAULTS["pressure_hpa"])) * 100.0
-    temp_k = temp_c + 273.15
-    r_specific = 287.05
-    return pressure_pa / (r_specific * temp_k)

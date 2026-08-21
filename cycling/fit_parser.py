@@ -54,6 +54,32 @@ def _invalid_signed(size):
     return (1 << (size * 8 - 1)) - 1
 
 
+_CRC_TABLE = None
+
+
+def _crc16_table():
+    global _CRC_TABLE
+    if _CRC_TABLE is None:
+        table = []
+        for byte in range(256):
+            crc = byte << 8
+            for _ in range(8):
+                crc = (((crc << 1) ^ 0x1021) & 0xFFFF) if crc & 0x8000 \
+                    else ((crc << 1) & 0xFFFF)
+            table.append(crc)
+        _CRC_TABLE = table
+    return _CRC_TABLE
+
+
+def fit_crc16(data):
+    """FIT file CRC-16: poly 0x1021, init 0x0000, MSB-first, no reflection."""
+    table = _crc16_table()
+    crc = 0
+    for byte in data:
+        crc = ((crc << 8) & 0xFFFF) ^ table[((crc >> 8) ^ byte) & 0xFF]
+    return crc
+
+
 def _invalid_unsigned(size):
     if size <= 0:
         return None
@@ -204,12 +230,44 @@ def _decode_record(defn, payload, timestamp):
     }
 
 
+def _compressed_wire_defn(defn):
+    """Definition with post-timestamp field offsets shifted onto the wire.
+
+    A compressed-timestamp message omits the timestamp field's bytes, so any
+    field defined *after* it sits earlier in the payload than its declared
+    offset (fields are packed contiguously in definition order). Returns a
+    copy of the definition with those offsets adjusted; the original is left
+    untouched because the same local definition can also be used by ordinary
+    full-timestamp messages. The copy is cached on the definition dict.
+    """
+    wire = defn.get("_wire")
+    if wire is not None:
+        return wire
+    field_map = defn["field_map"]
+    ts_field = field_map.get(FIELD_TIMESTAMP)
+    if ts_field is None:
+        return defn  # nothing omitted on the wire; no shifted copy needed
+    shifted = {}
+    for num, f in field_map.items():
+        if f["offset"] > ts_field["offset"]:
+            g = dict(f)
+            g["offset"] = f["offset"] - ts_field["size"]
+            shifted[num] = g
+        else:
+            shifted[num] = f
+    wire = dict(defn)
+    wire["field_map"] = shifted
+    defn["_wire"] = wire
+    return wire
+
+
 def parse_fit(path):
     """Parse a .fit file into records + metadata.
 
     Returns ``(records, meta)``. ``records`` is a list of dicts with keys
     t/lat/lon/speed/dist/alt_raw/hr/cadence/grade_device (``t`` is a Unix
-    timestamp in seconds). ``meta`` carries session/file-level info.
+    timestamp in seconds). ``meta`` carries session/file-level info, plus
+    ``crc_valid`` when the file carries a checkable CRC (True/False).
     """
     data = pathlib.Path(path).read_bytes()
     if len(data) < 12:
@@ -220,10 +278,25 @@ def parse_fit(path):
     data_size = struct.unpack_from("<I", data, 4)[0]
     section = data[header_size:header_size + data_size]
 
+    meta = {}
     local_defs = {}
     records = []
-    meta = {}
     base_ts = None
+
+    # Data-section integrity: the two bytes after the data section hold a
+    # CRC-16 over the whole file up to that point. A stored value of 0 means
+    # "no checksum" per the spec, and a truncated file has no CRC bytes to
+    # check — both parse without a verdict. A mismatch is recorded but NOT
+    # fatal: consumer head units (Wahoo among them — every pristine device
+    # export tested fails this check) are known to write invalid file CRCs,
+    # and the reference python-fitparse parser ships an --ignore-crc option
+    # for exactly this. The flag keeps the diagnostic without rejecting the
+    # rider's real files.
+    crc_pos = header_size + data_size
+    if len(data) >= crc_pos + 2:
+        stored_crc = struct.unpack_from("<H", data, crc_pos)[0]
+        if stored_crc != 0:
+            meta["crc_valid"] = fit_crc16(data[:crc_pos]) == stored_crc
 
     pos = 0
     total = len(section)
@@ -255,19 +328,30 @@ def parse_fit(path):
                         new_ts += 256.0
                     base_ts = new_ts
                 ts = base_ts
+            elif base_ts is None:
+                # A compressed message before any full timestamp has no base
+                # to offset from, so its timestamp is unknowable — skip it
+                # (advancing by exactly its wire size) rather than emit a
+                # record dated to the FIT epoch.
+                ts_field = defn["field_map"].get(FIELD_TIMESTAMP)
+                sz = defn["payload_size"] - (ts_field["size"] if ts_field else 0)
+                pos = payload_pos + sz
+                continue
             else:
                 # Normal compressed header: 5-bit offset from the base.
-                ts = (base_ts or 0) + offset_bits
+                ts = base_ts + offset_bits
             # Compressed-timestamp messages omit the timestamp field from the
             # payload, so its bytes must not be counted in the message size or
-            # the stream desynchronises on the next message.
+            # the stream desynchronises on the next message — and fields
+            # defined after it sit at shifted (earlier) offsets.
             ts_field = defn["field_map"].get(FIELD_TIMESTAMP)
             sz = defn["payload_size"] - (ts_field["size"] if ts_field else 0)
             payload = section[payload_pos:payload_pos + sz]
             if defn["global_num"] == RECORD_GLOBAL:
                 # ``ts`` is in FIT-epoch seconds (``base_ts`` stays FIT-epoch
                 # for later compressed offsets); convert to Unix for records.
-                rec = _decode_record(defn, payload, ts + FIT_EPOCH_UNIX)
+                rec = _decode_record(_compressed_wire_defn(defn), payload,
+                                     ts + FIT_EPOCH_UNIX)
                 if rec is not None:
                     records.append(rec)
             base_ts = ts
