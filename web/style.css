@@ -345,7 +345,9 @@ a.chip--link:hover { background: var(--green-hover); border-color: var(--green-l
 .readout__label { overflow: hidden; color: var(--muted); font: 500 11px/15px var(--font-body); text-overflow: ellipsis; white-space: nowrap; }
 .readout__value { margin-top: 7px; overflow: hidden; color: var(--ink); font: 700 15px/20px var(--font-data); font-variant-numeric: tabular-nums; text-overflow: ellipsis; white-space: nowrap; }
 .readout__note { margin-top: 3px; overflow: hidden; color: var(--subtle); font: 500 11px/15px var(--font-data); text-overflow: ellipsis; white-space: nowrap; }
-.readout__note--empty { display: none; }
+/* Empty band notes keep their line (invisibly) so the readout bar never
+   changes height as coast and power sections alternate mid-scrub. */
+.readout__note--empty { visibility: hidden; }
 /* Odd-count metric groups in two-column layouts leave a dead last cell; let
    the lone last field span the row instead. */
 @media (max-width: 960px) {
