@@ -241,9 +241,23 @@ def parse_fit(path):
             if offset_bits == 0x1F:
                 if payload_pos >= total:
                     break
-                offset_bits = section[payload_pos]
+                # Escape: the next byte carries the LOW 8 BITS OF A NEW BASE
+                # timestamp (a once-per-minute resync), not an additive
+                # offset. Rebuild the base, rolling forward across a byte
+                # boundary; this message's timestamp is the new base.
+                b = section[payload_pos]
                 payload_pos += 1
-            ts = (base_ts or 0) + offset_bits
+                if base_ts is None:
+                    base_ts = float(b)
+                else:
+                    new_ts = base_ts - (base_ts % 256) + b
+                    while new_ts < base_ts:
+                        new_ts += 256.0
+                    base_ts = new_ts
+                ts = base_ts
+            else:
+                # Normal compressed header: 5-bit offset from the base.
+                ts = (base_ts or 0) + offset_bits
             # Compressed-timestamp messages omit the timestamp field from the
             # payload, so its bytes must not be counted in the message size or
             # the stream desynchronises on the next message.

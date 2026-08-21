@@ -190,11 +190,12 @@ def cumulative_distance(lats, lons):
 
 
 def smooth_over_distance(distance, values, window_m):
-    """Distance-weighted moving average using a ~window_m metre boxcar.
+    """Plain moving average over a ~window_m metre boxcar.
 
-    Distance is a strictly-ish increasing cumulative array; we smooth over the
-    window of points whose cumulative distance falls within +/- window_m/2.
-    """
+    The window is defined in distance space: each point averages the points
+    whose cumulative distance falls within +/- window_m/2. (Not
+    distance-weighted — at 1-4 m point spacing the plain mean is equivalent
+    to well under a centimetre of weighting error.)"""
     distance = np.asarray(distance, dtype=float)
     values = np.asarray(values, dtype=float)
     n = len(values)

@@ -94,7 +94,12 @@ def _lzw_decode(data):
         if next_free < 4096:
             table[next_free] = prev + entry[:1]
             next_free += 1
-            if next_free == (1 << code_width) and code_width < 12:
+            # TIFF LZW uses the "early change" convention: the code width
+            # increases one entry sooner than mathematically necessary
+            # (511 -> 10 bits, 1023 -> 11, 2047 -> 12). GIF-style timing
+            # (512/1024/2048) misdecodes every code past the first width
+            # change and shears the raster.
+            if next_free >= (1 << code_width) - 1 and code_width < 12:
                 code_width += 1
         prev = entry
 

@@ -233,8 +233,12 @@ def _per_point_wind(records, weather, n):
     spd = spd[:k]
     drc = drc[:k]
     t0 = records[0]["t"]
-    hours = np.array([ride_hour + (r["t"] - t0) / 3600.0 for r in records], dtype=float)
-    hours = np.clip(hours, 0.0, 23.999)
+    # Wrap onto the diurnal series: a ride crossing midnight continues into
+    # the next day's early hours (the archive is one day, so hour 0 of the
+    # same series is the best available estimate). Clamping at 23.999 used
+    # to pin every post-midnight point to the last hour instead.
+    hours = np.array([(ride_hour + (r["t"] - t0) / 3600.0) % 24.0
+                      for r in records], dtype=float)
     ws_pts = np.interp(hours, np.arange(len(spd)), spd)
     # Circular interpolation of direction along the shortest arc, so a wrap
     # across north (350° -> 10°) interpolates through 0° rather than the long

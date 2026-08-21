@@ -136,7 +136,6 @@ def build_elevation(records, progress_cb=None):
         rec["elev_raw"] = float(sampled[i]) if sampled[i] is not None else None
         rec["elev"] = float(smooth[i])
         rec["grade"] = float(grade[i])
-        rec["snapped"] = bool(mm_info.get("snapped_ratio", 0) > 0)  # coarse flag
         records_out.append(rec)
 
     summary = {

@@ -772,18 +772,11 @@ def _refresh_records():
                 if cur is None or val > cur["value"]:
                     best[key] = {"ride_id": row["id"], "value": val}
 
-        for key, (label_key, label) in [
-            ("distance_m", ("distance_m", "Longest ride")),
-            ("elevation_gain_m", ("elevation_gain_m", "Most climbing")),
-            ("avg_speed_mps", ("avg_speed_mps", "Fastest average")),
-            ("max_speed_mps", ("max_speed_mps", "Top speed")),
-            ("avg_watts", ("avg_watts", "Best average power")),
-            ("vo2max", ("vo2max", "VO2max estimate")),
-        ]:
-            if key in best:
+        for metric, _slug, label in _RECORD_METRICS:
+            if metric in best:
                 conn.execute(
                     "INSERT INTO record (ride_id, metric, value, label) VALUES (?,?,?,?)",
-                    (best[key]["ride_id"], key, best[key]["value"], label),
+                    (best[metric]["ride_id"], metric, best[metric]["value"], label),
                 )
         conn.commit()
 

@@ -99,7 +99,33 @@ def _job(job_id, **updates):
     with _jobs_lock:
         job = _jobs.setdefault(job_id, {"id": job_id})
         job.update(updates)
+        # Bound the dict: a long-running (tray) process used to accumulate
+        # one entry per import forever. Never drop queued/running jobs.
+        if len(_jobs) > 200:
+            for jid in [k for k, v in _jobs.items()
+                        if v.get("status") not in ("running", "queued")
+                        ][:len(_jobs) - 200]:
+                del _jobs[jid]
         return dict(job)
+
+
+# Upload guard: a .fit file is a few hundred kB; 64 MB is generous.
+MAX_UPLOAD_BYTES = 64 * 1024 * 1024
+
+
+def _prune_import_dir():
+    """Delete uploaded .fit files older than 48 h (imports are copied into
+    SQLite; the originals used to accumulate forever)."""
+    try:
+        cutoff = time.time() - 48 * 3600
+        for p in config.IMPORT_DIR.glob("*"):
+            try:
+                if p.is_file() and p.stat().st_mtime < cutoff:
+                    p.unlink()
+            except OSError:
+                continue
+    except Exception:
+        pass
 
 
 def _run_import(job_id, path, rider, bike, name):
@@ -201,6 +227,7 @@ def import_files(payload: dict = Body(...)):
     bike = bike or dict(config.DEFAULT_BIKE)
 
     job_ids = []
+    _prune_import_dir()
     for item in files:
         name = item.get("name", "ride.fit")
         raw = item.get("data", "")
@@ -209,6 +236,12 @@ def import_files(payload: dict = Body(...)):
         try:
             data = base64.b64decode(raw)
         except Exception:
+            continue
+        if len(data) > MAX_UPLOAD_BYTES:
+            job_id = uuid.uuid4().hex[:12]
+            _job(job_id, status="error", progress=100, message="File too large",
+                 error=f"{name} exceeds the {MAX_UPLOAD_BYTES // (1 << 20)} MB limit")
+            job_ids.append(job_id)
             continue
         job_id = uuid.uuid4().hex[:12]
         path = config.IMPORT_DIR / f"{job_id}_{name}"
@@ -433,28 +466,37 @@ def save_coast_tag(ride_id: int, payload: dict = Body(...)):
     rider = rider or dict(config.DEFAULT_RIDER)
     bike = bike or dict(config.DEFAULT_BIKE)
     weather = ride["weather"]
-    results = pipeline.try_auto_calibrate(ride_id, records, rider, bike, weather)
+    loop_fit = power_mod.calibrate_loop(records, rider, bike, weather)
+    if loop_fit and pipeline._acceptable_loop(loop_fit):
+        storage.save_calibration(ride_id, loop_fit)
 
-    loop_fit = next((c for c in results if c.get("type") == "loop"), None)
-    if loop_fit and loop_fit.get("wind_recovered") and loop_fit.get("wind_mps") is not None:
+    # Always refresh the ride's stored power + metrics with the new tags.
+    # The refresh used to be gated on a wind-recovering loop fit, so a tag
+    # on a ride whose descents cannot identify the wind (e.g. one
+    # single-direction descent) left the stored watts stale until some
+    # unrelated recalculation happened to run.
+    eff_weather = weather
+    if (loop_fit and pipeline._acceptable_loop(loop_fit)
+            and loop_fit.get("wind_recovered")
+            and loop_fit.get("wind_mps") is not None):
         eff_weather = dict(weather)
         eff_weather["wind_speed_mps"] = loop_fit["wind_mps"]
         eff_weather["wind_dir_deg"] = loop_fit["wind_dir_deg"]
-        records = power_mod.compute_power(records, rider, bike, eff_weather)
-        m = ride.get("metrics") or {}
-        elev_summary = {
-            "gain_m": m.get("elevation_gain_m") or ride.get("gain_m") or 0.0,
-            "min_elev": m.get("min_elev"),
-            "max_elev": m.get("max_elev"),
-            "elevation_source": ride.get("elevation_source") or m.get("elevation_source"),
-            "snapped_ratio": m.get("snapped_ratio", 0.0),
-        }
-        meta = {
-            "total_distance": ride.get("distance_m"),
-            "duration_seconds": ride.get("duration_s"),
-        }
-        metrics = metrics_mod.compute_ride_metrics(records, rider, bike, elev_summary, meta)
-        storage.update_ride_metrics(ride_id, metrics, records)
+    records = power_mod.compute_power(records, rider, bike, eff_weather)
+    m = ride.get("metrics") or {}
+    elev_summary = {
+        "gain_m": m.get("elevation_gain_m") or ride.get("gain_m") or 0.0,
+        "min_elev": m.get("min_elev"),
+        "max_elev": m.get("max_elev"),
+        "elevation_source": ride.get("elevation_source") or m.get("elevation_source"),
+        "snapped_ratio": m.get("snapped_ratio", 0.0),
+    }
+    meta = {
+        "total_distance": ride.get("distance_m"),
+        "duration_seconds": ride.get("duration_s"),
+    }
+    metrics = metrics_mod.compute_ride_metrics(records, rider, bike, elev_summary, meta)
+    storage.update_ride_metrics(ride_id, metrics, records)
 
     # A tag changes the pool of trusted coasts, so refresh the cross-ride fit
     # too and let every ride re-apply its own recovered wind + pedal tags.

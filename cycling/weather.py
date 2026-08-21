@@ -25,9 +25,10 @@ _DEFAULTS = {
 
 # Bump whenever the fetch logic changes the *meaning* of a cached field
 # (pressure_hpa switched from surface_pressure to pressure_msl, and the
-# ride-local date/hour became timezone-aware): the on-disk cache must not
-# re-serve old entries under their previous semantics.
-_CACHE_VERSION = "v2"
+# ride-local date/hour became timezone-aware; then wind switched from
+# Open-Meteo's default km/h to m/s): the on-disk cache must not re-serve
+# old entries under their previous semantics.
+_CACHE_VERSION = "v3"
 
 
 def _cache():
@@ -142,6 +143,15 @@ def fetch_weather(lat, lon, when_unix):
         r.raise_for_status()
         payload = r.json()
         data = payload.get("hourly", {})
+        # Open-Meteo's default wind unit is km/h (its response says so in
+        # hourly_units); the engine works in m/s. Convert at the boundary so
+        # the point wind, gust margin, sigma spread and hourly series are all
+        # m/s and nothing downstream can re-interpret km/h as m/s.
+        for _wkey in ("wind_speed_10m", "wind_gusts_10m"):
+            arr = data.get(_wkey)
+            if arr:
+                data[_wkey] = [None if x is None else float(x) / 3.6
+                               for x in arr]
         times = data.get("time") or []
         # Index with the ride's local hour in the timezone the response
         # actually used (resolved from "auto" when applicable).

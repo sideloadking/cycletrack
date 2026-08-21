@@ -442,6 +442,113 @@ def test_non_uk_weather_date():
           f"(ride local), ride_hour {result['ride_hour']}")
 
 
+def test_tag_save_refreshes_stored_power():
+    """Saving a manual 'pedal' tag must refresh the stored power points for
+    that ride immediately — even when no wind-recovering loop fit succeeds
+    (e.g. a single-direction descent). Regression: stored watts stayed 0 W /
+    mode='coast' inside the tagged window until some unrelated recalculation
+    happened to run, because the refresh was gated on wind recovery."""
+    import pathlib
+    import shutil
+    import tempfile
+    from unittest import mock
+
+    from cycling import coast as coast_mod, config, metrics as metrics_mod
+    from cycling import server, storage
+
+    rider = {"weight_kg": 75.0, "max_hr": 180, "age": 40,
+             "resting_hr": 55, "sex": "male"}
+    bike = {"mass_kg": 9.0, "cdA": 0.35, "crr": 0.005,
+            "drivetrain_efficiency": 0.97, "calibrated": False}
+    weather = {"temp_c": 15.0, "pressure_hpa": 1013.0,
+               "wind_speed_mps": 0.0, "wind_dir_deg": 0.0}
+
+    # One climb + ONE descent: calibrate_loop needs >=2 segments, so no
+    # authoritative fit can succeed here — exactly the stale-tag scenario.
+    segs = [(0.05, 5.0, 90), (-0.02, 6.0, 80)]
+    t0 = 1_700_000_000.0
+    records = make_coast_ride(segs)
+    for r in records:
+        r["t"] += t0
+        r["lat"] = 52.0 + (r["t"] - t0) * 1e-5   # single heading (north)
+    for i in range(1, len(records)):
+        a, b = records[i - 1], records[i]
+        b["dist"] = a["dist"] + (a["speed"] + b["speed"]) / 2 * (b["t"] - a["t"])
+        b["elev"] = a["elev"] + (a["grade"] + b["grade"]) / 2 * (
+            b["speed"] * (b["t"] - a["t"]))
+
+    powered = power_mod.compute_power([dict(r) for r in records], rider, bike, weather)
+    elev_summary = {"gain_m": 10.0, "min_elev": 90.0, "max_elev": 110.0,
+                    "elevation_source": "device", "snapped_ratio": 0.0}
+    meta = {"total_distance": records[-1]["dist"],
+            "duration_seconds": records[-1]["t"] - records[0]["t"]}
+    mets = metrics_mod.compute_ride_metrics(powered, rider, bike, elev_summary, meta)
+
+    tmp = pathlib.Path(tempfile.mkdtemp(prefix="cycling_tagpower_"))
+    orig_db = config.DB_PATH
+    try:
+        config.DB_PATH = tmp / "cycling.db"
+        storage._conn = None
+        storage.init_db()
+        rid = storage.insert_ride({
+            "bike_id": 1, "filename": "tag-refresh.fit",
+            "started_at": t0, "ended_at": records[-1]["t"], "tz": "UTC",
+            "elevation_source": "device", "weather": weather,
+            "metrics": mets, "records": powered,
+            "file_hash": "tag-refresh-hash", "bike_calibrated": False,
+        })
+
+        desc = coast_mod.find_descent_segments(records)
+        assert len(desc) == 1, desc
+        d = desc[0]
+
+        # The background pooled refit must not run during this unit test.
+        with mock.patch.object(server, "_schedule_pooled_recalibration"):
+            resp = server.save_coast_tag(rid, {
+                "t_start": d["t_start"], "t_end": d["t_end"], "label": "pedal"})
+        assert resp.get("ok"), resp
+
+        rows = [dict(r) for r in storage._connect().execute(
+            "SELECT t, watts_est, mode FROM power_point WHERE ride_id=? "
+            "AND t>=? AND t<=?", (rid, d["t_start"], d["t_end"]))]
+        assert rows, "no power points inside the tagged window"
+        n_pedal = sum(1 for r in rows if r["mode"] == "pedal")
+        assert n_pedal >= len(rows) * 0.8, \
+            f"stored power not refreshed by tag save: {rows[:5]}"
+        assert any((r["watts_est"] or 0) > 0 for r in rows), rows[:5]
+
+        # And clearing the tag reverts the window to zeroed coasts again.
+        with mock.patch.object(server, "_schedule_pooled_recalibration"):
+            server.save_coast_tag(rid, {
+                "t_start": d["t_start"], "t_end": d["t_end"], "label": None})
+        rows2 = [dict(r) for r in storage._connect().execute(
+            "SELECT watts_est, mode FROM power_point WHERE ride_id=? "
+            "AND t>=? AND t<=?", (rid, d["t_start"], d["t_end"]))]
+        assert all(r["mode"] == "coast" and (r["watts_est"] or 0) == 0.0
+                   for r in rows2), rows2[:5]
+
+        # Tag saves must not spam climb-diagnostic rows: the climb procedure
+        # ignores tags entirely, so re-running it per click only duplicated
+        # identical rows (19 of them once existed in a real database).
+        n_climb = storage._connect().execute(
+            "SELECT COUNT(*) FROM calibration WHERE ride_id=? AND type='climb'",
+            (rid,)).fetchone()[0]
+        assert n_climb == 0, f"tag save appended {n_climb} climb diagnostics"
+        print("tag-save power refresh OK: pedal tag rewrote stored watts "
+              "immediately without a wind-recovering fit, and no climb "
+              "diagnostic rows were appended")
+    finally:
+        conn = getattr(storage, "_conn", None)
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        storage._conn = None
+        config.DB_PATH = orig_db
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def test_both_segments_calibration_recorded():
     """A ride with both a valid loop and a climb diagnostic must record both,
     while the loop stays authoritative (get_ride_calibration) and only the
@@ -770,6 +877,201 @@ def test_pooled_calibration_authoritative():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def test_weather_wind_unit_kmh_to_ms():
+    """Open-Meteo's default wind unit is km/h; fetch_weather must return
+    m/s. Regression: the archive's 20.7 km/h breeze was once stored as
+    20.7 m/s, inflating aero power ~4x into headwinds."""
+    import datetime
+    from unittest import mock
+    from cycling import weather as weather_mod
+
+    when_unix = datetime.datetime(2026, 8, 19, 16, 33, 0,
+                                  tzinfo=datetime.timezone.utc).timestamp()
+
+    class _FakeResp:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return self._payload
+
+    def _fake_get(url, params=None, timeout=None):
+        params = dict(params or {})
+        if params.get("hourly") == "temperature_2m":
+            return _FakeResp({"timezone": "Europe/London",
+                              "hourly": {"time": ["2020-01-01T00:00"],
+                                         "temperature_2m": [0.0]}})
+        return _FakeResp({
+            "timezone": "Europe/London",
+            # Deliberately Open-Meteo's DEFAULT unit: km/h.
+            "hourly_units": {"wind_speed_10m": "km/h",
+                             "wind_gusts_10m": "km/h"},
+            "hourly": {
+                "time": [f"2026-08-19T{i:02d}:00" for i in range(24)],
+                "temperature_2m": [15.0] * 24,
+                "wind_speed_10m": [36.0] * 24,   # 36 km/h = 10 m/s
+                "wind_direction_10m": [180.0] * 24,
+                "pressure_msl": [1013.0] * 24,
+                "wind_gusts_10m": [54.0] * 24,   # 54 km/h = 15 m/s
+            },
+        })
+
+    weather_mod._TZ_CACHE.clear()
+    with mock.patch.object(weather_mod.requests, "get", side_effect=_fake_get), \
+            mock.patch.object(weather_mod, "_cache", return_value={}), \
+            mock.patch.object(weather_mod, "_save_cache"):
+        result = weather_mod.fetch_weather(51.233, -1.134, when_unix)
+
+    assert result["source"] == "open-meteo"
+    assert abs(result["wind_speed_mps"] - 10.0) < 1e-9, result["wind_speed_mps"]
+    assert abs(result["wind_speed_hourly"][0] - 10.0) < 1e-9
+    # Gust margin: (15 - 10) m/s * 0.4 = 2.0 -> sigma at least that, capped <= 4.
+    assert 2.0 - 1e-9 <= result["wind_sigma_mps"] <= 4.0, result["wind_sigma_mps"]
+    print(f"weather wind units OK: 36 km/h fetched as "
+          f"{result['wind_speed_mps']:.1f} m/s, sigma {result['wind_sigma_mps']:.2f}")
+
+
+def test_tiff_lzw_roundtrip():
+    """A spec-compliant LZW TIFF (as libtiff/PIL writes, with the TIFF
+    'early change' code-width convention) must decode to its source pixels.
+
+    Regression: the decoder once increased its LZW code width at GIF timing
+    (512/1024/2048) instead of TIFF timing (511/1023/2047), so any real LZW
+    raster decoded to garbage (or crashed) after the first width change.
+    """
+    import io
+
+    import numpy as np
+    from PIL import Image
+
+    from cycling import tiffread
+
+    rng = np.random.RandomState(0)
+    for shape in ((40, 60), (64, 64), (33, 47)):
+        h, w = shape
+        src = (np.cumsum(np.cumsum(rng.rand(h, w), axis=0), axis=1) * 3.0
+               + 12.5).astype(np.float32)
+        buf = io.BytesIO()
+        Image.fromarray(src, mode="F").save(buf, format="TIFF",
+                                            compression="tiff_lzw")
+        arr3, tw, th = tiffread.read_tiff(buf.getvalue())
+        assert (tw, th) == (w, h), (tw, th, w, h)
+        got = arr3[0].astype(np.float32)
+        assert got.shape == (h, w), (got.shape, (h, w))
+        err = float(np.max(np.abs(got - src)))
+        assert err < 1e-2, f"LZW decode error {err} m at {shape}"
+    print("TIFF LZW round-trip OK: libtiff-written LZW decodes exactly")
+
+
+def test_wind_hour_wraps_midnight():
+    """A ride crossing midnight must wrap onto the next day's early hours of
+    the diurnal wind series, not clamp at 23:59. Regression: hours were
+    np.clip'ed to 23.999, so after midnight every point used the last hour
+    of the archive day instead of wrapping to hour 0."""
+    from cycling import power as power_mod
+
+    weather = {
+        "wind_speed_mps": 2.0, "wind_dir_deg": 180.0,
+        "ride_hour": 23,
+        "wind_speed_hourly": [10.0] * 23 + [2.0],   # hour 23 calm, 00:xx windy
+        "wind_dir_hourly": [180.0] * 24,
+    }
+    t0 = 1_700_000_000.0
+    records = [{"t": t0 + i * 3600.0, "lat": 52.0, "lon": -1.5,
+                "elev": 100.0, "grade": 0.0, "speed": 5.0, "dist": i * 5.0}
+               for i in range(3)]  # 23:00, 00:00, 01:00
+
+    ws_pts, _wd = power_mod._per_point_wind(records, weather, len(records))
+    assert abs(ws_pts[0] - 2.0) < 1e-6, ws_pts          # ride starts in hour 23
+    assert abs(ws_pts[1] - 10.0) < 1e-6, (              # midnight wraps to hour 0
+        "post-midnight points clamped at 23:59 instead of wrapping", ws_pts)
+    assert abs(ws_pts[2] - 10.0) < 1e-6, ws_pts
+    print("midnight wind wrap OK: hourly series wraps instead of clamping")
+
+
+def test_fit_timestamp_escape_resyncs():
+    """A compressed-timestamp header whose 5-bit offset is 0x1F must treat
+    the next byte as the LOW BYTE OF A NEW BASE TIMESTAMP (a resync), not as
+    an additive offset. The payload still omits the 4-byte timestamp field,
+    and later compressed messages offset from the new base."""
+    import struct
+    import tempfile
+    from pathlib import Path
+
+    from cycling import config, fit_parser
+
+    defn = (bytes([0x40, 0x00, 0x00]) + struct.pack("<H", 20) + bytes([3])
+            + bytes([0, 4, 0x05, 1, 4, 0x05, 253, 4, 0x0C]))
+    lat, lon = 520000000, -15000000
+    data_full = bytes([0x00]) + struct.pack("<iiI", lat, lon, 1000)
+    data_comp_5 = bytes([0x80 | 0x05]) + struct.pack("<ii", lat, lon)
+    data_escape = bytes([0x80 | 0x1F]) + bytes([56]) + struct.pack("<ii", lat, lon)
+    data_trail = bytes([0x80 | 0x03]) + struct.pack("<ii", lat, lon)
+    section = defn + data_full + data_comp_5 + data_escape + data_trail
+    header = (bytes([14, 0x10]) + struct.pack("<H", 0x0010)
+              + struct.pack("<I", len(section)) + b".FIT" + struct.pack("<H", 0))
+
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / "escape.fit"
+        p.write_bytes(header + section)
+        records, _ = fit_parser.parse_fit(p)
+
+    assert len(records) == 4, f"message stream desynced: {len(records)}"
+    fit_t = [r["t"] - config.FIT_EPOCH_UNIX for r in records]
+    assert fit_t == [1000, 1005, 1080, 1083], (
+        "escape byte must resync the base to (base & ~0xFF) + byte with "
+        f"rollover, got {fit_t}")
+    print(f"FIT timestamp escape OK: base resynced 1005 -> 1080 via one byte")
+
+
+def test_server_hardening_caps():
+    """The job dict must stay bounded (finished jobs dropped first), and the
+    import-dir pruner must remove only stale uploads."""
+    import pathlib
+    import shutil
+    import tempfile
+    from unittest import mock
+
+    from cycling import server
+
+    # Job cap: fill with finished jobs, add one running job, overflow.
+    original_jobs = dict(server._jobs)
+    try:
+        server._jobs.clear()
+        for i in range(250):
+            server._job(f"j{i:03d}", status="done", progress=100)
+        server._job("keep-running", status="running", progress=10)
+        server._job("fresh", status="queued", progress=0)
+        assert len(server._jobs) <= 201, len(server._jobs)
+        assert "keep-running" in server._jobs and "fresh" in server._jobs
+        assert "j000" not in server._jobs  # oldest finished dropped first
+    finally:
+        server._jobs.clear()
+        server._jobs.update(original_jobs)
+
+    # Import-dir pruning: only files older than the cutoff disappear.
+    tmp = pathlib.Path(tempfile.mkdtemp(prefix="cycling_prune_"))
+    orig_dir = server.config.IMPORT_DIR
+    try:
+        server.config.IMPORT_DIR = tmp
+        old = tmp / "old.fit"
+        new = tmp / "new.fit"
+        old.write_bytes(b"x")
+        new.write_bytes(b"y")
+        two_days_ago = __import__("time").time() - 49 * 3600
+        import os as _os
+        _os.utime(old, (two_days_ago, two_days_ago))
+        server._prune_import_dir()
+        assert not old.exists() and new.exists()
+    finally:
+        server.config.IMPORT_DIR = orig_dir
+        shutil.rmtree(tmp, ignore_errors=True)
+    print("server hardening OK: job dict bounded (running kept), stale uploads pruned")
+
+
 if __name__ == "__main__":
     test_compressed_timestamp_fit()
     test_route_detection()
@@ -781,6 +1083,12 @@ if __name__ == "__main__":
     test_trimp_sex()
     test_wind_direction_wrap()
     test_non_uk_weather_date()
+    test_weather_wind_unit_kmh_to_ms()
+    test_tiff_lzw_roundtrip()
+    test_tag_save_refreshes_stored_power()
+    test_wind_hour_wraps_midnight()
+    test_fit_timestamp_escape_resyncs()
+    test_server_hardening_caps()
     test_both_segments_calibration_recorded()
     test_coast_classification_and_storage()
     test_manual_tag_changes_calibration_coasts()
