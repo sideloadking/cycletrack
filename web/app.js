@@ -40,9 +40,10 @@ const GRAPH = {
   greenSoft: hexToRgba(GRAPH_CSS("--green", "#1b6f4d"), .14),
   blue: GRAPH_CSS("--blue", "#3b6ea5"),
   orange: GRAPH_CSS("--orange", "#a8691f"),
-  /* Bands are the honest envelope of every estimate, so their fill needs real
-     presence — a faint ghost reads as a rendering bug, not an uncertainty. */
-  orangeSoft: hexToRgba(GRAPH_CSS("--orange", "#a8691f"), .22),
+  /* The band is the honest envelope of every estimate, so its fill keeps real
+     presence — but the hatch sits quieter than the estimate line, so the
+     signal reads first and the uncertainty second. */
+  orangeSoft: hexToRgba(GRAPH_CSS("--orange", "#a8691f"), .17),
   ink: GRAPH_CSS("--ink-soft", "#34423a"),
   muted: GRAPH_CSS("--muted", "#55655c"),
   cursor: GRAPH_CSS("--graph-cursor", "#123a28"),
@@ -268,6 +269,12 @@ function navigate() {
   const token = startPage();
   const renderer = routes[name] || renderDashboard;
   renderer(param, token);
+  /* One calm page-enter rise per navigation; replayed by re-adding the class
+     after the DOM swap. Removed on animationend so it never wraps the page in
+     a transform longer than necessary. */
+  view.classList.remove("view-enter");
+  void view.offsetWidth;
+  view.classList.add("view-enter");
   /* Focus the page heading when it lands — including when an async data fill
      replaces the first h1 node. The h1 is only ever swapped by page-level
      re-renders, so re-asserting focus here never steals it from user input. */
@@ -375,16 +382,34 @@ function graphQuantile(values, fraction) {
 function graphAxisDomain(series, axis, options = {}) {
   const config = options || {};
   const values = [];
+  const bandValues = [];
   series.filter((item) => (item.axis || "left") === axis).forEach((item) => {
     (item.values || []).forEach((value) => { if (finiteGraphValue(value)) values.push(Number(value)); });
     if (item.band) {
-      [...(item.band.lo || []), ...(item.band.hi || [])].forEach((value) => { if (finiteGraphValue(value)) values.push(Number(value)); });
+      [...(item.band.lo || []), ...(item.band.hi || [])].forEach((value) => { if (finiteGraphValue(value)) bandValues.push(Number(value)); });
     }
   });
   if (!values.length) return { min: 0, max: 1, ticks: [0, 1] };
   const robust = Boolean(config.robust) && values.length > 8;
+  /* The estimate line owns the domain. Band edges join only through a clipped
+     quantile window (config.bandClip), so a genuinely wide band still reads
+     without its rarest extremes crushing the signal to the bottom of the plot;
+     the tooltip always reports the true band. */
+  const bandClip = finiteGraphValue(config.bandClip) ? Math.min(1, Math.max(0, Number(config.bandClip))) : null;
   let min = robust ? graphQuantile(values, config.robustLow ?? .02) : Math.min(...values);
   let max = robust ? graphQuantile(values, config.robustHigh ?? .98) : Math.max(...values);
+  if (bandClip != null && bandValues.length > 4) {
+    min = Math.min(min, graphQuantile(bandValues, (1 - bandClip) / 2));
+    max = Math.max(max, graphQuantile(bandValues, 1 - (1 - bandClip) / 2));
+  } else if (bandValues.length) {
+    if (robust) {
+      min = Math.min(min, graphQuantile(bandValues, config.robustLow ?? .02));
+      max = Math.max(max, graphQuantile(bandValues, config.robustHigh ?? .98));
+    } else {
+      min = Math.min(min, ...bandValues);
+      max = Math.max(max, ...bandValues);
+    }
+  }
   const isBar = series.some((item) => (item.axis || "left") === axis && item.type === "bar");
   if (config.min != null) min = Number(config.min);
   if (config.max != null) max = Number(config.max);
@@ -440,11 +465,25 @@ function graphDisplayIndices(values, xValues, maxPoints = 800) {
 }
 function graphCurvedPath(points, tension = .65) {
   if (points.length < 3) return points.map(([x, y], index) => `${index ? "L" : "M"}${x.toFixed(2)} ${y.toFixed(2)}`).join(" ");
+  const xs = points.map(([x]) => x);
+  const range = Math.max(...xs) - Math.min(...xs);
+  /* Two samples of the same day sit a few pixels apart; a full-tension curve
+     through them overshoots into a vertical curl. Draw those segments straight
+     and clamp every control point between its endpoints so a curve can never
+     loop backwards in x. */
+  const straightFloor = range > 0 ? range * .012 : 0;
   let d = `M${points[0][0].toFixed(2)} ${points[0][1].toFixed(2)} `;
   for (let i = 0; i < points.length - 1; i += 1) {
     const p0 = points[Math.max(0, i - 1)], p1 = points[i], p2 = points[i + 1], p3 = points[Math.min(points.length - 1, i + 2)];
-    const c1x = p1[0] + (p2[0] - p0[0]) / 6 * tension, c1y = p1[1] + (p2[1] - p0[1]) / 6 * tension;
-    const c2x = p2[0] - (p3[0] - p1[0]) / 6 * tension, c2y = p2[1] - (p3[1] - p1[1]) / 6 * tension;
+    if (Math.abs(p2[0] - p1[0]) <= straightFloor) {
+      d += `L${p2[0].toFixed(2)} ${p2[1].toFixed(2)} `;
+      continue;
+    }
+    let c1x = p1[0] + (p2[0] - p0[0]) / 6 * tension, c1y = p1[1] + (p2[1] - p0[1]) / 6 * tension;
+    let c2x = p2[0] - (p3[0] - p1[0]) / 6 * tension, c2y = p2[1] - (p3[1] - p1[1]) / 6 * tension;
+    const lo = Math.min(p1[0], p2[0]), hi = Math.max(p1[0], p2[0]);
+    c1x = Math.min(hi, Math.max(lo, c1x));
+    c2x = Math.min(hi, Math.max(lo, c2x));
     d += `C${c1x.toFixed(2)} ${c1y.toFixed(2)} ${c2x.toFixed(2)} ${c2y.toFixed(2)} ${p2[0].toFixed(2)} ${p2[1].toFixed(2)} `;
   }
   return d.trim();
@@ -717,7 +756,7 @@ function renderGraph(target, spec) {
     const graphId = String(el.id || "chart").replace(/[^a-z0-9_-]/gi, "-");
     const patternId = `graph-band-${graphId}-${graph.uid}`;
     const clipId = `graph-clip-${graphId}-${graph.uid}`;
-    const defs = `<defs><pattern id="${patternId}" width="8" height="8" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="8" height="8" fill="${hexToRgba(GRAPH.orange, .13)}"></rect><line x1="0" y1="0" x2="0" y2="8" stroke="${GRAPH.orange}" stroke-opacity=".55" stroke-width="1.8"></line></pattern><clipPath id="${clipId}"><rect x="${margin.left}" y="${margin.top}" width="${plotWidth}" height="${plotHeight}"></rect></clipPath></defs>`;
+    const defs = `<defs><pattern id="${patternId}" width="8" height="8" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="8" height="8" fill="${hexToRgba(GRAPH.orange, .1)}"></rect><line x1="0" y1="0" x2="0" y2="8" stroke="${GRAPH.orange}" stroke-opacity=".38" stroke-width="1.3"></line></pattern><clipPath id="${clipId}"><rect x="${margin.left}" y="${margin.top}" width="${plotWidth}" height="${plotHeight}"></rect></clipPath></defs>`;
     const bands = spec.series.filter((item) => item.band).map((item, index) => {
       const path = graphBandPath(item, spec.x.values, xToPx, (value) => yToPx(value, item.axis || "left"), displayIndices.get(item));
       return path ? `<path class="graph-band" style="--i:${index}" d="${path}" fill="${item.band.pattern ? `url(#${patternId})` : item.band.color || GRAPH.orangeSoft}"></path>` : "";
@@ -919,6 +958,64 @@ function graphEmpty(el, title, message) {
   el.innerHTML = emptyState(title, message);
 }
 
+/* ------------------------------------------------------------------ ribbon */
+
+/* The route ribbon — the atlas signature. A single projected trace of the
+   ride's own GPS shape: soft under-stroke, measured green line, start and
+   finish nodes. Shapes are cached per source so revisiting a page never
+   refetches. */
+const ribbonCache = new Map();
+async function fetchRibbonShape(sourceId) {
+  const key = String(sourceId);
+  if (ribbonCache.has(key)) return ribbonCache.get(key);
+  const promise = (async () => {
+    try {
+      const series = await api(`/api/rides/${encodeURIComponent(key)}/series?downsample=300`);
+      const points = (series.gps || [])
+        .filter((point) => point.lat != null && point.lon != null)
+        .map((point) => [point.lat, point.lon]);
+      return points.length > 1 ? points : "";
+    } catch (_) { return ""; }
+  })();
+  const cached = promise.catch(() => "");
+  ribbonCache.set(key, cached);
+  return cached;
+}
+function ribbonSvg(points, { width = 244, height = 64, strokeWidth = 2 } = {}) {
+  if (!Array.isArray(points) || points.length < 2) return "";
+  const lats = points.map((p) => p[0]), lons = points.map((p) => p[1]);
+  const minLat = Math.min(...lats), maxLat = Math.max(...lats);
+  const minLon = Math.min(...lons), maxLon = Math.max(...lons);
+  const midLatRad = ((minLat + maxLat) / 2) * Math.PI / 180;
+  const spanLat = Math.max(maxLat - minLat, 1e-9);
+  const spanLon = Math.max((maxLon - minLon) * Math.cos(midLatRad), 1e-9);
+  const pad = strokeWidth + 5;
+  const scale = Math.min((width - pad * 2) / spanLon, (height - pad * 2) / spanLat);
+  const offsetX = pad + (width - pad * 2 - spanLon * scale) / 2;
+  const offsetY = pad + (height - pad * 2 - spanLat * scale) / 2;
+  const project = ([lat, lon]) => [
+    offsetX + (lon - minLon) * Math.cos(midLatRad) * scale,
+    height - offsetY - (lat - minLat) * scale,
+  ];
+  const path = points.map((point, index) => {
+    const [x, y] = project(point);
+    return `${index ? "L" : "M"}${x.toFixed(1)} ${y.toFixed(1)}`;
+  }).join(" ");
+  const first = project(points[0]), last = project(points[points.length - 1]);
+  const node = ([x, y]) => `<circle class="ribbon-node" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${(strokeWidth + 1.6).toFixed(1)}" fill="var(--green)"></circle>`;
+  return `<svg class="ribbon" viewBox="0 0 ${width} ${height}" role="img" aria-label="Route shape"><path class="ribbon-under" d="${path}" stroke-width="${strokeWidth + 3}" vector-effect="non-scaling-stroke"></path><path class="ribbon-line" d="${path}" stroke-width="${strokeWidth}" vector-effect="non-scaling-stroke"></path>${node(first)}${node(last)}</svg>`;
+}
+function fillRibbonWells(token) {
+  $$("[data-ribbon]").forEach(async (well) => {
+    const key = well.dataset.ribbon;
+    const points = key.startsWith("inline:") ? ribbonCache.get(key) || "" : await fetchRibbonShape(key);
+    if (!pageIsCurrent(token)) return;
+    const svg = ribbonSvg(points, { width: Number(well.dataset.ribbonWidth) || undefined, height: Number(well.dataset.ribbonHeight) || undefined });
+    if (svg) well.innerHTML = svg;
+    else well.remove();
+  });
+}
+
 /* ------------------------------------------------------------------ dashboard */
 
 async function renderDashboard(_, token = startPage()) {
@@ -1024,7 +1121,7 @@ function drawWattsHr(data, selected) {
   renderGraph(el, {
     ariaLabel: `Watts produced at ${selected} beats per minute over the ride history`,
     x: { values: points.map((point) => point.date), type: "time", label: "ride date" },
-    y: { format: "watts", includeZero: true, robust: true },
+    y: { format: "watts", includeZero: true, robust: true, bandClip: .7 },
     series: [{
       name: `${selected} bpm`, values: points.map((point) => point.watts), color: GRAPH.green, width: 2.6, pointRadius: 4,
       format: "watts",
@@ -1068,7 +1165,7 @@ function drawPowerTrend(data, duration) {
   renderGraph(el, {
     ariaLabel: `Best power for ${duration} ${Number(duration) === 1 ? "minute" : "minutes"} over time`,
     x: { values: points.map((point) => point.date), type: "time", label: "ride date" },
-    y: { format: "watts", includeZero: true, robust: true },
+    y: { format: "watts", includeZero: true, robust: true, bandClip: .7 },
     series: [{
       name: `best ${duration} min`, values: points.map((point) => point.watts), color: GRAPH.orange, width: 2.5, pointRadius: 3.5, format: "watts",
       band: { lo: points.map((point) => point.lo ?? point.watts), hi: points.map((point) => point.hi ?? point.watts), pattern: true },
@@ -1081,10 +1178,18 @@ function drawPowerCurves(data) {
   const curves = data.curves || [];
   if (!curves.length) { graphEmpty(el, "No curves yet", "Your recent rides will layer here as the history grows."); return; }
   const xValues = data.durations || curves[0].points.map((point) => point.min);
+  /* Same-day rides would otherwise produce two identical legend chips; give
+     the repeats an ordinal so each curve stays addressable. */
+  const dateCounts = new Map();
+  curves.forEach((curve) => { const key = fmtDate(curve.date); dateCounts.set(key, (dateCounts.get(key) || 0) + 1); });
+  const dateSeen = new Map();
   const series = curves.map((curve, index) => {
     const byMinute = Object.fromEntries((curve.points || []).map((point) => [point.min, point.watts]));
+    const dateLabel = fmtDate(curve.date);
+    const repeat = dateCounts.get(dateLabel) > 1 ? ` · ride ${(dateSeen.get(dateLabel) || 0) + 1}` : "";
+    dateSeen.set(dateLabel, (dateSeen.get(dateLabel) || 0) + 1);
     const newest = index === curves.length - 1;
-    return { name: fmtDate(curve.date), values: xValues.map((minute) => byMinute[minute]), color: newest ? GRAPH.green : hexToRgba(GRAPH.blue, .25 + index / Math.max(curves.length, 2) * .45), width: newest ? 2.8 : 1.35, pointRadius: newest ? 3.5 : 2, format: "watts" };
+    return { name: `${dateLabel}${repeat}`, values: xValues.map((minute) => byMinute[minute]), color: newest ? GRAPH.green : hexToRgba(GRAPH.blue, .25 + index / Math.max(curves.length, 2) * .45), width: newest ? 2.8 : 1.35, pointRadius: newest ? 3.5 : 2, format: "watts" };
   });
   renderGraph(el, {
     ariaLabel: "Power duration curves for recent rides",
@@ -1109,7 +1214,7 @@ async function renderRides(_, token = startPage()) {
     const mode = sort.value;
     const rows = sorted.filter((ride) => `${ride.filename || ""} ${fmtDateTime(ride.started_at)}`.toLowerCase().includes(query)).sort((a, b) => mode === "oldest" ? a.started_at - b.started_at : mode === "distance" ? (b.distance_m || 0) - (a.distance_m || 0) : mode === "climb" ? (b.gain_m || 0) - (a.gain_m || 0) : b.started_at - a.started_at);
     if (!rows.length) { table.innerHTML = emptyState("No rides match", "Try a different filename, date, or sort."); return; }
-    table.innerHTML = `<div class="table-scroll"><table class="ride-table"><thead><tr><th>Date</th><th class="num">Distance</th><th class="num">Time</th><th class="num">Climb</th><th class="num">Power</th></tr></thead><tbody>${rows.map((ride) => `<tr tabindex="0" data-ride="${ride.id}" aria-label="Open ${esc(ride.filename || "ride")}"><td class="mono">${esc(fmtDateTime(ride.started_at))}</td><td class="num">${esc(fmtDistance(ride.distance_m))}</td><td class="num">${esc(fmtDuration(ride.duration_s))}</td><td class="num">${esc(fmtMeters(ride.gain_m))}</td><td class="num">${esc(fmtWatts(ride.avg_watts))}</td></tr>`).join("")}</tbody></table></div>`;
+    table.innerHTML = `<div class="table-scroll"><table class="ride-table"><thead><tr><th>Date</th><th class="num">Distance</th><th class="num">Time</th><th class="num">Climb</th><th class="num">Power</th><th class="num" title="Estimated energy expenditure with the model's uncertainty">Energy</th></tr></thead><tbody>${rows.map((ride) => `<tr tabindex="0" data-ride="${ride.id}" aria-label="Open ${esc(ride.filename || "ride")}"><td class="mono">${esc(fmtDateTime(ride.started_at))}${ride.filename ? `<span class="cell-sub">${esc(ride.filename)}</span>` : ""}</td><td class="num">${esc(fmtDistance(ride.distance_m))}</td><td class="num">${esc(fmtDuration(ride.duration_s))}</td><td class="num">${esc(fmtMeters(ride.gain_m))}</td><td class="num">${esc(fmtWatts(ride.avg_watts))}</td><td class="num">${ride.calories_kcal != null ? `${Math.round(ride.calories_kcal)}<span class="cell-note"> kcal</span>` : "—"}</td></tr>`).join("")}</tbody></table></div>`;
     $$('[data-ride]', table).forEach((row) => { const go = () => { if (!location.hash.includes(`/ride/${row.dataset.ride}`)) location.hash = `#/ride/${row.dataset.ride}`; }; row.addEventListener("click", go); row.addEventListener("keydown", (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); go(); } }); });
   }
   search.addEventListener("input", drawRows); sort.addEventListener("change", drawRows); drawRows();
@@ -1118,7 +1223,7 @@ async function renderRides(_, token = startPage()) {
 /* ------------------------------------------------------------------ import */
 
 function renderImport(_, token = startPage()) {
-  view.innerHTML = `    ${pageHeader("Import rides")}<section class="import-layout"><div class="card card-pad import-card"><div id="dropzone" class="dropzone" role="button" tabindex="0" aria-describedby="dropzone-help"><div class="dropzone__content"><div class="upload-mark">${icon("upload")}</div><h2>Select FIT files</h2><p id="dropzone-help">Drop files here or click to browse.</p><span class="dropzone__format">FIT files only</span></div></div><input id="file-input" type="file" accept=".fit" multiple hidden aria-label="Choose FIT files"></div></section><section id="queue-card" class="card queue-card" hidden><div class="card-title"><h2>Import queue</h2><span id="queue-count" class="pill pill--muted">Waiting</span></div><div id="jobs"></div><div id="queue-status" class="visually-hidden" role="status" aria-live="polite"></div></section>`;
+  view.innerHTML = `    ${pageHeader("Import rides")}<section class="import-layout"><div class="card card-pad import-card"><div id="dropzone" class="dropzone" role="button" tabindex="0" aria-describedby="dropzone-help"><div class="dropzone__content"><div class="upload-mark">${icon("upload")}</div><h2>Select FIT files</h2><p id="dropzone-help">Drop files here or click to browse.</p><span class="dropzone__format">FIT files only</span></div></div><input id="file-input" type="file" accept=".fit" multiple hidden aria-label="Choose FIT files"></div><div class="import-pipeline"><div class="import-pipeline__step"><small><i>1</i>Parse</small><p>The FIT file is decoded on this machine.</p></div><div class="import-pipeline__step"><small><i>2</i>Elevation</small><p>Hills rebuilt from 1 m lidar, then smoothed.</p></div><div class="import-pipeline__step"><small><i>3</i>Weather</small><p>Historical wind and temperature for the ride hour.</p></div><div class="import-pipeline__step"><small><i>4</i>Power</small><p>A physics estimate with an honest band.</p></div></div><p class="import-privacy">${icon("shield")}Files never leave this machine — parsing, analysis and storage are all local.</p></section><section id="queue-card" class="card queue-card" hidden><div class="card-title"><h2>Import queue</h2><span id="queue-count" class="pill pill--muted">Waiting</span></div><div id="jobs"></div><div id="queue-status" class="visually-hidden" role="status" aria-live="polite"></div></section>`;
   const dropzone = $("#dropzone"), input = $("#file-input");
   const choose = () => { input.value = ""; input.click(); };
   let dragDepth = 0;
@@ -1218,7 +1323,7 @@ async function renderRecords(_, token = startPage()) {
   let records;
   try { records = await api("/api/records"); } catch (error) { if (pageIsCurrent(token)) view.innerHTML = errorState("Records could not load", error.message, retryAction()); return; }
   if (!pageIsCurrent(token)) return;
-  view.innerHTML = `    ${pageHeader("Records")}${records.length ? `<section class="record-grid">${records.map((record) => `<a class="card record-card" href="#/ride/${record.ride_id}"><div class="record-card__label">${esc(record.label)}</div><div class="record-card__value">${esc(recordDisplay(record))}</div><div class="record-card__foot"><span class="record-card__date">${esc(fmtDate(record.started_at))}</span></div></a>`).join("")}</section>` : emptyState("Your record board is blank", "Import your first ride and the best work will be called out here.", `<a class="button button--primary button--small" href="#/import">Import first ride</a>`)} `;
+  view.innerHTML = `    ${pageHeader("Records")}${records.length ? `<section class="record-grid">${records.map((record) => `<a class="card record-card" href="#/ride/${record.ride_id}"><div class="record-card__head"><span class="record-card__badge" aria-hidden="true">${icon("award")}</span><span class="record-card__label">${esc(record.label)}</span></div><div class="record-card__value">${esc(recordDisplay(record))}</div><div class="record-card__foot"><span class="record-card__date">Set on ${esc(fmtDate(record.started_at))}</span><span class="record-card__cta">Open ride ${icon("chevron-right")}</span></div></a>`).join("")}</section>` : emptyState("Your record board is blank", "Import your first ride and the best work will be called out here.", `<a class="button button--primary button--small" href="#/import">Import first ride</a>`)} `;
 }
 
 /* ------------------------------------------------------------------ routes */
@@ -1230,7 +1335,8 @@ async function renderRoutes(_, token = startPage()) {
   if (!pageIsCurrent(token)) return;
   const repeated = routesList.filter((route) => route.n_rides > 1);
   const solo = routesList.filter((route) => route.n_rides === 1);
-  view.innerHTML = `    ${pageHeader("Routes")}${routesList.length ? `<section class="route-grid">${[...repeated, ...solo].map((route) => `<a class="card route-card" href="#/route/${route.id}"><h2>${esc(route.name)}</h2><div class="route-card__date">${route.first_at === route.last_at ? esc(fmtDate(route.first_at)) : `${esc(fmtDate(route.first_at))} → ${esc(fmtDate(route.last_at))}`}</div><div class="route-card__stats"><div class="route-card__stat"><small>Length</small><strong>${esc(fmtDistance(route.distance_m))}</strong></div><div class="route-card__stat"><small>Climb</small><strong>${esc(fmtMeters(route.gain_m))}</strong></div><div class="route-card__stat"><small>Recorded</small><strong>${route.n_rides} ride${route.n_rides === 1 ? "" : "s"}</strong></div></div></a>`).join("")}</section>` : emptyState("No routes yet", "Import a history of rides and repeated roads will be grouped automatically.", `<a class="button button--primary button--small" href="#/import">Import history</a>`)} `;
+  view.innerHTML = `    ${pageHeader("Routes")}${routesList.length ? `<section class="route-grid">${[...repeated, ...solo].map((route) => `<a class="card route-card" href="#/route/${route.id}"><h2>${esc(route.name)}</h2><div class="route-card__date">${route.first_at === route.last_at ? esc(fmtDate(route.first_at)) : `${esc(fmtDate(route.first_at))} → ${esc(fmtDate(route.last_at))}`}</div><div class="route-card__ribbon" data-ribbon="${route.ref_ride_id}" aria-hidden="true"><div class="skeleton skeleton--ribbon"></div></div><div class="route-card__stats"><div class="route-card__stat"><small>Length</small><strong>${esc(fmtDistance(route.distance_m))}</strong></div><div class="route-card__stat"><small>Climb</small><strong>${esc(fmtMeters(route.gain_m))}</strong></div><div class="route-card__stat"><small>Recorded</small><strong>${route.n_rides} ride${route.n_rides === 1 ? "" : "s"}</strong></div></div></a>`).join("")}</section>` : emptyState("No routes yet", "Import a history of rides and repeated roads will be grouped automatically.", `<a class="button button--primary button--small" href="#/import">Import history</a>`)} `;
+  fillRibbonWells(token);
 }
 
 async function renderRouteDetail(id, token = startPage()) {
@@ -1239,10 +1345,13 @@ async function renderRouteDetail(id, token = startPage()) {
   try { route = await api(`/api/routes/${id}`); } catch (error) { if (pageIsCurrent(token)) view.innerHTML = errorState("Route not found", error.message, retryAction()); return; }
   if (!pageIsCurrent(token)) return;
   const rides = route.rides || [];
+  /* The stored route shape feeds the hero ribbon without another request. */
+  ribbonCache.set("inline:route", Array.isArray(route.latlon) ? route.latlon : "");
   const w140 = rides.filter((ride) => ride.watts_140 != null);
   const np = rides.filter((ride) => ride.normalized_power != null);
-  view.innerHTML = `<div class="detail-top"><a class="detail-back" href="#/routes">${icon("chevron-right")}Back to routes</a><span class="detail-count">${rides.length} ride${rides.length === 1 ? "" : "s"}</span></div><section class="detail-hero route-hero"><div class="detail-hero__title"><h1>${esc(route.name)}</h1><p class="detail-hero__lede">${rides.length > 1 ? "Compare the same road over time." : "Ride this route again to start a comparison."}</p></div><div class="detail-hero__primary"><div class="metric"><div class="metric__label">Route length</div><div class="metric__value">${esc(fmtDistance(route.distance_m))}</div></div><div class="metric"><div class="metric__label">Climbing / ride</div><div class="metric__value">${esc(fmtMeters(route.gain_m))}</div></div><div class="metric"><div class="metric__label">First recorded</div><div class="metric__value metric__value--date">${esc(fmtDate(rides[0]?.started_at))}</div></div><div class="metric"><div class="metric__label">Latest recorded</div><div class="metric__value metric__value--date">${esc(fmtDate(rides[rides.length - 1]?.started_at))}</div></div></div></section>${rides.length > 1 ? `<section class="card card-pad mt-20"><div class="card-title"><div><h2>Ride comparison</h2></div></div><div class="table-scroll"><table class="ride-table"><thead><tr><th>#</th><th>Date</th><th class="num">Time</th><th class="num">Avg speed</th><th class="num">Avg HR</th><th class="num" title="Watts your heart rate predicts at 140 bpm — the honest same-effort comparison">W @ 140</th><th class="num">Power</th><th class="num">Temp</th><th class="num">Wind</th></tr></thead><tbody>${rides.map((ride) => `<tr tabindex="0" data-route-ride="${ride.id}"><td class="mono">${ride.route_n}</td><td class="mono">${esc(fmtDateTime(ride.started_at))}</td><td class="num">${esc(fmtDuration(ride.duration_s))}</td><td class="num">${esc(fmtSpeed(ride.avg_speed_mps))}</td><td class="num">${ride.avg_hr ? `${Math.round(ride.avg_hr)} bpm` : "—"}</td><td class="num">${esc(fmtWatts(ride.watts_140))}</td><td class="num">${esc(fmtWatts(ride.avg_watts))}</td><td class="num">${esc(fmtTemp(ride.temp_c))}</td><td class="num">${esc(fmtWind(ride.wind_mps))}</td></tr>`).join("")}</tbody></table></div></section><section class="card chart-card mt-20"><div class="card-title"><div><h2>Progress on this road</h2></div><div class="chart-legend"><span class="legend-item"><i class="legend-swatch"></i>W @ 140 bpm</span><span class="legend-item"><i class="legend-swatch legend-swatch--blue"></i>Normalized power</span></div></div><div id="route-comparison-chart" class="chart chart--small"></div></section>` : `<section class="card card-pad mt-20"><div class="card-title"><div><h2>Ride it again</h2></div></div><a class="solo-ride" href="#/ride/${rides[0].id}"><span class="solo-ride__date">${esc(fmtDateTime(rides[0].started_at))}</span><span class="solo-ride__stat"><small>Time</small><strong>${esc(fmtDuration(rides[0].duration_s))}</strong></span><span class="solo-ride__stat"><small>Avg speed</small><strong>${esc(fmtSpeed(rides[0].avg_speed_mps))}</strong></span><span class="solo-ride__stat"><small>Avg HR</small><strong>${rides[0].avg_hr ? `${Math.round(rides[0].avg_hr)} bpm` : "—"}</strong></span><span class="solo-ride__cta">Open ride ${icon("chevron-right")}</span></a></section>`}`;
+  view.innerHTML = `<div class="detail-top"><a class="detail-back" href="#/routes">${icon("chevron-right")}Back to routes</a><span class="detail-count">${rides.length} ride${rides.length === 1 ? "" : "s"}</span></div><section class="detail-hero route-hero"><div class="detail-hero__title"><h1>${esc(route.name)}</h1><p class="detail-hero__lede">${rides.length > 1 ? "Compare the same road over time." : "Ride this route again to start a comparison."}</p><div class="route-card__ribbon ribbon--hero" data-ribbon="inline:route" data-ribbon-width="520" data-ribbon-height="84" aria-hidden="true"><div class="skeleton skeleton--ribbon"></div></div></div><div class="detail-hero__primary"><div class="metric"><div class="metric__label">Route length</div><div class="metric__value">${esc(fmtDistance(route.distance_m))}</div></div><div class="metric"><div class="metric__label">Climbing / ride</div><div class="metric__value">${esc(fmtMeters(route.gain_m))}</div></div><div class="metric"><div class="metric__label">First recorded</div><div class="metric__value metric__value--date">${esc(fmtDate(rides[0]?.started_at))}</div></div><div class="metric"><div class="metric__label">Latest recorded</div><div class="metric__value metric__value--date">${esc(fmtDate(rides[rides.length - 1]?.started_at))}</div></div></div></section>${rides.length > 1 ? `<section class="card card-pad mt-20"><div class="card-title"><div><h2>Ride comparison</h2></div></div><div class="table-scroll"><table class="ride-table"><thead><tr><th>#</th><th>Date</th><th class="num">Time</th><th class="num">Avg speed</th><th class="num">Avg HR</th><th class="num" title="Watts your heart rate predicts at 140 bpm — the honest same-effort comparison">W @ 140</th><th class="num">Power</th><th class="num">Temp</th><th class="num">Wind</th></tr></thead><tbody>${rides.map((ride) => `<tr tabindex="0" data-route-ride="${ride.id}"><td class="mono">${ride.route_n}</td><td class="mono">${esc(fmtDateTime(ride.started_at))}</td><td class="num">${esc(fmtDuration(ride.duration_s))}</td><td class="num">${esc(fmtSpeed(ride.avg_speed_mps))}</td><td class="num">${ride.avg_hr ? `${Math.round(ride.avg_hr)} bpm` : "—"}</td><td class="num">${esc(fmtWatts(ride.watts_140))}</td><td class="num">${esc(fmtWatts(ride.avg_watts))}</td><td class="num">${esc(fmtTemp(ride.temp_c))}</td><td class="num">${esc(fmtWind(ride.wind_mps))}</td></tr>`).join("")}</tbody></table></div></section><section class="card chart-card mt-20"><div class="card-title"><div><h2>Progress on this road</h2></div><div class="chart-legend"><span class="legend-item"><i class="legend-swatch"></i>W @ 140 bpm</span><span class="legend-item"><i class="legend-swatch legend-swatch--blue"></i>Normalized power</span></div></div><div id="route-comparison-chart" class="chart chart--small"></div></section>` : `<section class="card card-pad mt-20"><div class="card-title"><div><h2>Ride it again</h2></div></div><a class="solo-ride" href="#/ride/${rides[0].id}"><span class="solo-ride__date">${esc(fmtDateTime(rides[0].started_at))}</span><span class="solo-ride__stat"><small>Time</small><strong>${esc(fmtDuration(rides[0].duration_s))}</strong></span><span class="solo-ride__stat"><small>Avg speed</small><strong>${esc(fmtSpeed(rides[0].avg_speed_mps))}</strong></span><span class="solo-ride__stat"><small>Avg HR</small><strong>${rides[0].avg_hr ? `${Math.round(rides[0].avg_hr)} bpm` : "—"}</strong></span><span class="solo-ride__cta">Open ride ${icon("chevron-right")}</span></a></section>`}`;
   $$('[data-route-ride]').forEach((row) => { const go = () => { location.hash = `#/ride/${row.dataset.routeRide}`; }; row.addEventListener("click", go); row.addEventListener("keydown", (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); go(); } }); });
+  fillRibbonWells(token);
   const xValues = [...new Set([...w140, ...np].map((ride) => ride.started_at))].sort((a, b) => a - b);
   const series = [];
   if (w140.length) {
@@ -1289,7 +1398,26 @@ async function renderRideDetail(id, token = startPage()) {
   const metrics = ride.metrics || {};
   const avgPowerRange = fmtRange(metrics.avg_watts_lo, metrics.avg_watts_hi);
   const normalizedPowerRange = fmtRange(metrics.normalized_power_lo, metrics.normalized_power_hi);
-  view.innerHTML = `<div class="detail-top"><a class="detail-back" href="#/rides">${icon("chevron-right")}Back to rides</a><div class="detail-actions"><button class="button button--danger button--small" id="delete-ride" type="button">${icon("trash")}Delete ride</button></div></div><section class="detail-hero"><div class="detail-hero__title"><h1>${esc(fmtDate(ride.started_at))}</h1><p class="detail-hero__lede">${esc(fmtTime(ride.started_at))}</p></div><div class="detail-hero__primary">${metricMarkup("Distance", fmtDistance(metrics.distance_m))}${metricMarkup("Moving time", fmtDuration(metrics.duration_s))}${metricMarkup("Climbing", fmtMeters(metrics.elevation_gain_m))}</div><h2 class="detail-hero__subhead">Power</h2><div class="detail-hero__power">${metricMarkup("Average power", metrics.avg_watts != null ? Math.round(metrics.avg_watts) : "—", "W", avgPowerRange)}${metricMarkup("Normalized power", metrics.normalized_power != null ? Math.round(metrics.normalized_power) : "—", "W", normalizedPowerRange)}</div></section><section class="card telemetry-card"><div class="telemetry-head"><div><h2>Ride replay</h2></div><div class="telemetry-tools"><button class="button button--primary button--small" id="replay-play" type="button" aria-pressed="false">${icon("play")}<span>Play replay</span></button></div></div><div class="map-wrap"><div id="ride-map" class="ride-map"></div></div><div class="scrubber"><div class="scrubber__line"><input id="scrub-slider" type="range" min="0" max="0" value="0" aria-label="Scrub through ride"><span id="scrub-time" class="scrubber__time">0:00</span></div><div id="scrub-readout" class="readout"></div></div><details class="descents"><summary class="descents__summary"><span>Descents</span><span id="descents-count" class="detail-count">Loading…</span></summary><div class="descents__body"><p class="descents__hint">Choose a label when the automatic reading is wrong.</p><div id="descents-list" class="list-stack"></div></div></details></section><section class="telemetry-graphs"><article class="card telemetry-graph"><div class="card-title"><div><h2>Elevation &amp; grade</h2></div></div><div id="ch-elev" class="chart chart--small"></div></article><article class="card telemetry-graph"><div class="card-title"><div><h2>Heart rate</h2></div></div><div id="ch-hr" class="chart chart--small"></div></article><article class="card telemetry-graph"><div class="card-title"><div><h2>Power</h2></div></div><div id="ch-power" class="chart chart--small"></div></article><article class="card telemetry-graph"><div class="card-title"><div><h2>Speed</h2></div></div><div id="ch-speed" class="chart chart--small"></div></article></section><article class="card telemetry-graph mt-20"><div class="card-title"><div><h2>Gradient distribution</h2></div></div><div id="ch-grade" class="chart chart--small"></div></article>${metrics.cardiac_drift && metrics.has_hr ? `<article id="drift-card" class="card drift-card"></article>` : ""}`;
+  /* Context chips: where this ride sits in its route, what the weather did,
+     and which elevation source rebuilt the hills. All already local data. */
+  const heroChips = [];
+  if (ride.route?.id) heroChips.push(`<a class="chip chip--link" href="#/route/${ride.route.id}">${icon("route")}${esc(ride.route.name || "Route")}</a>`);
+  const weather = ride.weather || {};
+  if (finiteValue(weather.temp_c) != null) heroChips.push(`<span class="chip" title="Archived temperature for the ride hour">${icon("thermometer")}${esc(fmtTemp(weather.temp_c))}C</span>`);
+  if (finiteValue(weather.wind_speed_mps) != null) {
+    const windDir = finiteValue(weather.wind_dir_deg);
+    const compass = windDir == null ? "" : ` ${["N", "NE", "E", "SE", "S", "SW", "W", "NW"][Math.round(windDir / 45) % 8]}`;
+    heroChips.push(`<span class="chip" title="Archived wind for the ride hour">${icon("wind")}${esc(fmtWind(weather.wind_speed_mps))}${compass}</span>`);
+  }
+  if (ride.elevation_source === "lidar") heroChips.push(`<span class="chip" title="Elevation rebuilt from 1 m lidar, map-matched and smoothed">${icon("pin")}Lidar 1 m</span>`);
+  else if (ride.elevation_source) heroChips.push(`<span class="chip" title="Elevation from the 25 m DEM fallback">${icon("pin")}DEM 25 m</span>`);
+  /* Energy returns to the hero: the calorie estimate with its band and the
+     model that produced it — an estimate, styled like one. */
+  const calories = metrics.calories;
+  const energyMetric = calories && finiteValue(calories.kcal)
+    ? metricMarkup("Energy", Math.round(calories.kcal), "kcal", `${Math.round(calories.lo)} – ${Math.round(calories.hi)} kcal · ${calories.method === "hr" ? "heart-rate model" : "work model"}`)
+    : "";
+  view.innerHTML = `<div class="detail-top"><a class="detail-back" href="#/rides">${icon("chevron-right")}Back to rides</a><div class="detail-actions"><button class="button button--danger button--small" id="delete-ride" type="button">${icon("trash")}Delete ride</button></div></div><section class="detail-hero"><div class="detail-hero__title"><h1>${esc(fmtDate(ride.started_at))}</h1><p class="detail-hero__lede">${esc(fmtTime(ride.started_at))}</p>${heroChips.length ? `<div class="hero-chips">${heroChips.join("")}</div>` : ""}</div><div class="detail-hero__primary">${metricMarkup("Distance", fmtDistance(metrics.distance_m))}${metricMarkup("Moving time", fmtDuration(metrics.duration_s))}${metricMarkup("Climbing", fmtMeters(metrics.elevation_gain_m))}</div><h2 class="detail-hero__subhead">Power &amp; energy</h2><div class="detail-hero__power${energyMetric ? " detail-hero__power--three" : ""}">${metricMarkup("Average power", metrics.avg_watts != null ? Math.round(metrics.avg_watts) : "—", "W", avgPowerRange)}${metricMarkup("Normalized power", metrics.normalized_power != null ? Math.round(metrics.normalized_power) : "—", "W", normalizedPowerRange)}${energyMetric}</div></section><section class="card telemetry-card"><div class="telemetry-head"><div><h2>Ride replay</h2></div><div class="telemetry-tools"><button class="button button--primary button--small" id="replay-play" type="button" aria-pressed="false">${icon("play")}<span>Play replay</span></button></div></div><div class="map-wrap"><div id="ride-map" class="ride-map"></div></div><div class="scrubber"><div class="scrubber__line"><input id="scrub-slider" type="range" min="0" max="0" value="0" aria-label="Scrub through ride"><span id="scrub-time" class="scrubber__time">0:00</span></div><div id="scrub-readout" class="readout"></div></div><details class="descents"><summary class="descents__summary"><span>Descents</span><span id="descents-count" class="detail-count">Loading…</span></summary><div class="descents__body"><p class="descents__hint">Choose a label when the automatic reading is wrong.</p><div class="chart-legend descents__legend"><span class="legend-item"><i class="legend-swatch"></i>Freewheeled</span><span class="legend-item"><i class="legend-swatch legend-swatch--orange"></i>Pedalled</span><span class="legend-item"><i class="legend-swatch legend-swatch--ink"></i>Braked</span><span class="legend-item muted">Highlighted on the map while this section is open</span></div><div id="descents-list" class="list-stack"></div></div></details></section><section class="telemetry-graphs"><article class="card telemetry-graph"><div class="card-title"><div><h2>Elevation &amp; grade</h2></div></div><div id="ch-elev" class="chart chart--small"></div></article><article class="card telemetry-graph"><div class="card-title"><div><h2>Heart rate</h2></div></div><div id="ch-hr" class="chart chart--small"></div></article><article class="card telemetry-graph"><div class="card-title"><div><h2>Power</h2></div></div><div id="ch-power" class="chart chart--small"></div></article><article class="card telemetry-graph"><div class="card-title"><div><h2>Speed</h2></div></div><div id="ch-speed" class="chart chart--small"></div></article></section><article class="card telemetry-graph mt-20"><div class="card-title"><div><h2>Gradient distribution</h2></div></div><div id="ch-grade" class="chart chart--small"></div></article>${metrics.cardiac_drift && metrics.has_hr ? `<article id="drift-card" class="card drift-card"></article>` : ""}`;
   $("#delete-ride").addEventListener("click", async () => { if (!window.confirm("Delete this ride?\n\nThis removes the ride and its derived analysis from the local database.")) return; const button = $("#delete-ride"); button.disabled = true; try { await api(`/api/rides/${id}`, { method: "DELETE" }); if (!pageIsCurrent(token)) return; toast("Ride deleted."); location.hash = "#/rides"; } catch (error) { if (pageIsCurrent(token)) { button.disabled = false; toast(error.message); } } });
   const chartRefs = seriesFailure ? {} : drawTelemetryCharts(series, metrics);
   setupReplay(series, chartRefs, seriesFailure ? [] : descents.descents || [], id);
@@ -1405,7 +1533,7 @@ function drawTelemetryCharts(series, metrics) {
     refs.power = renderGraph("#ch-power", {
       ariaLabel: "Power and range across the ride",
       x: { values: distance, type: "linear", label: xLabel },
-      y: { format: "watts", includeZero: true, robust: true },
+      y: { format: "watts", includeZero: true, robust: true, bandClip: .7 },
       series: [{
         name: "Power", values: wattsEst, color: GRAPH.orange, width: 2.1, pointRadius: 1.8, points: false, format: "watts",
         band: { lo: wattsLo, hi: wattsHi, pattern: true },
@@ -1414,13 +1542,17 @@ function drawTelemetryCharts(series, metrics) {
     refs.power.xOf = (index) => distance[index];
   } else graphEmpty($("#ch-power"), "No power data", "Power points were not stored for this Ride.");
   const distribution = metrics.grade_distribution || [];
-  if (distribution.length) renderGraph("#ch-grade", {
-    ariaLabel: "Distribution of grade across the ride",
-    x: { values: distribution.map((_, index) => index), type: "category", labels: distribution.map((bucket) => `${bucket.from}%`), label: "grade" },
-    y: { format: "integer", includeZero: true },
-    series: [{ name: "Samples", values: distribution.map((bucket) => bucket.count), type: "bar", pointColors: distribution.map((bucket) => bucket.from >= 3 ? GRAPH.orange : GRAPH.green), opacity: .8, format: "integer" }],
-  });
-  else graphEmpty($("#ch-grade"), "No grade distribution", "There is not enough elevation data to draw this view.");
+  if (distribution.length) {
+    /* Linear axis on bucket centres, so ticks land on real grade values
+       instead of arbitrary category indices with dead space at the edges. */
+    const step = distribution.length > 1 ? distribution[1].from - distribution[0].from : 1;
+    renderGraph("#ch-grade", {
+      ariaLabel: "Distribution of grade across the ride",
+      x: { values: distribution.map((bucket) => bucket.from + step / 2), type: "linear", label: "grade (%)", format: (value) => `${Math.round(value)}%` },
+      y: { format: "integer", includeZero: true },
+      series: [{ name: "Samples", values: distribution.map((bucket) => bucket.count), type: "bar", pointColors: distribution.map((bucket) => bucket.from >= 3 ? GRAPH.orange : GRAPH.green), opacity: .8, format: "integer" }],
+    });
+  } else graphEmpty($("#ch-grade"), "No grade distribution", "There is not enough elevation data to draw this view.");
   return refs;
 }
 
@@ -1430,15 +1562,17 @@ function descentLabelText(descent) {
 function descentColor(label) {
   return label === "coast" ? GRAPH.green : label === "pedal" ? GRAPH.orange : label === "brake" ? GRAPH.ink : GRAPH.muted;
 }
-function drawDescentHighlights(map, gps, descents) {
-  if (!map || !window.L) return null;
+function drawDescentHighlights(map, gps, descents, active = true) {
+  /* Highlights live only while the descent review is open: the route line
+     stays a clean route at all other times instead of being overpainted. */
+  if (!map || !window.L || !active) return null;
   const group = window.L.layerGroup().addTo(map);
   descents.forEach((descent) => {
     const latlngs = [];
     gps.forEach((point) => { if (point.t >= descent.t_start && point.t <= descent.t_end && point.lat != null && point.lon != null) latlngs.push([point.lat, point.lon]); });
     if (latlngs.length > 1) {
-      window.L.polyline(latlngs, { color: "#fff", weight: 8, opacity: .85, lineCap: "round" }).addTo(group);
-      window.L.polyline(latlngs, { color: descentColor(descent.label), weight: 4, opacity: .95, lineCap: "round" }).addTo(group);
+      window.L.polyline(latlngs, { color: "#fff", weight: 7, opacity: .8, lineCap: "round" }).addTo(group);
+      window.L.polyline(latlngs, { color: descentColor(descent.label), weight: 3.5, opacity: .92, lineCap: "round" }).addTo(group);
     }
   });
   return group;
@@ -1473,9 +1607,16 @@ function setupDescentTags(rideId, descents, gps, map, seek) {
     } catch (error) { if (pageIsCurrent(pageToken) && version === updateVersion) toast(error.message); return false; }
   }
 
+  /* The map carries descent colouring only while the review panel is open,
+     so opening the section explains the overlay and closing it restores the
+     plain route. */
+  const reviewPanel = document.querySelector("details.descents");
+  let highlightsOpen = Boolean(reviewPanel?.open);
+  if (reviewPanel) reviewPanel.addEventListener("toggle", () => { highlightsOpen = reviewPanel.open; redraw(); });
+
   function redraw() {
     if (highlight) { highlight.remove(); highlight = null; }
-    highlight = drawDescentHighlights(map, gps, descents);
+    highlight = drawDescentHighlights(map, gps, descents, highlightsOpen);
     renderList();
   }
 
@@ -1630,6 +1771,10 @@ function renderDriftCard(drift, hasHr) {
 
 /* ------------------------------------------------------------------ profile */
 
+/* Zone accents step through a calm green ramp — intensity without pretending
+   zones are error states. */
+const ZONE_ACCENTS = ["#a9cdb4", "#7db894", "#52a077", "#2b8559", "#11553a"];
+
 async function renderProfile(_, token = startPage()) {
   view.innerHTML = `<div class="skeleton skeleton--card"></div>`;
   const [profileResult, calibrationsResult] = await Promise.allSettled([api("/api/profile"), api("/api/calibrations")]);
@@ -1642,7 +1787,7 @@ async function renderProfile(_, token = startPage()) {
   const calibrations = calibrationsResult.status === "fulfilled" ? calibrationsResult.value : [];
   const calibrationsFailure = calibrationsResult.status === "rejected" ? calibrationsResult.reason : null;
   const rider = profile.rider || {}, bike = profile.bike || {}, zones = rider.hr_zones || [];
-  view.innerHTML = `    ${pageHeader("Profile & bike")}<section class="form-layout"><article class="card form-card"><div class="form-section"><h2>Rider</h2><div class="form-grid"><label class="form-field"><span>Age</span><input id="r-age" type="number" value="${esc(fmtNumber(rider.age ?? 40, 0))}"></label><label class="form-field"><span>Weight <em>kg</em></span><input id="r-weight" type="number" step=".5" value="${esc(fmtNumber(rider.weight_kg ?? 75, 1))}"></label><label class="form-field"><span>Height <em>cm</em></span><input id="r-height" type="number" step=".5" value="${esc(fmtNumber(rider.height_cm ?? 178, 1))}"></label><label class="form-field"><span>Resting HR <em>bpm</em></span><input id="r-rest" type="number" value="${esc(fmtNumber(rider.resting_hr ?? 55, 0))}"></label><label class="form-field"><span>Max HR <em>bpm</em></span><input id="r-maxhr" type="number" value="${esc(fmtNumber(rider.max_hr ?? 180, 0))}"></label><label class="form-field">Bike type<select id="r-bike">${["road", "gravel", "mountain", "hybrid", "tt"].map((type) => `<option value="${type}" ${rider.bike_type === type ? "selected" : ""}>${type}</option>`).join("")}</select></label><label class="form-field">Sex<select id="r-sex"><option value="" ${rider.sex ? "" : "selected"}>Not set</option><option value="male" ${rider.sex === "male" ? "selected" : ""}>Male</option><option value="female" ${rider.sex === "female" ? "selected" : ""}>Female</option></select><small class="form-field__hint">Drives the heart-rate calorie estimate and TRIMP load.</small></label></div></div><div class="form-section"><h2>Heart-rate zones</h2><p>Edit the boundaries if you know your own zones. They drive TRIMP and fitness/freshness.</p><div class="zone-grid">${[0,1,2,3,4].map((index) => { const zone = zones[index] || { lo: 0, hi: 0 }; const prevHi = index === 0 ? null : (zones[index - 1] || { hi: 0 }).hi; return `<div class="zone"><strong>Z${index + 1}</strong>${index === 0 ? `<input id="z0-lo" type="number" min="30" max="250" value="${esc(fmtNumber(zone.lo, 0))}" aria-label="Zone 1 lower">` : `<span class="zone__inherit" aria-hidden="true">${fmtNumber(prevHi, 0)}</span>`}<span class="zone__dash" aria-hidden="true">to</span><input id="z${index}-hi" type="number" min="30" max="250" value="${esc(fmtNumber(zone.hi, 0))}" aria-label="Zone ${index + 1} upper${index === 0 ? "" : ` (from ${fmtNumber(prevHi, 0)})`}"></div>`; }).join("")}</div></div></article><article class="card form-card"><div class="form-section"><h2>Bike</h2><div class="form-grid form-grid--two"><label class="form-field"><span>Name</span><input id="b-name" type="text" value="${esc(bike.name || "Road bike")}"></label><label class="form-field"><span>Mass <em>kg</em></span><input id="b-mass" type="number" step=".1" value="${esc(fmtNumber(bike.mass_kg ?? 9, 1))}"></label><label class="form-field">Rolling resistance<input id="b-crr" type="number" step=".0001" value="${esc(fmtNumber(bike.crr ?? .005, 4))}" title="Crr — how much the tyres resist rolling. Lower is faster on flats."></label><label class="form-field">Drag area CdA<input id="b-cda" type="number" step=".01" value="${esc(fmtNumber(bike.cdA ?? .35, 2))}" title="CdA = drag coefficient × frontal area. Lower means more aero."></label><label class="form-field">Drivetrain efficiency<input id="b-eff" type="number" step=".01" value="${esc(fmtNumber(bike.drivetrain_efficiency ?? .97, 2))}"></label></div></div><div class="form-section"><div class="calibration-note"><strong>${bike.calibrated ? "Bike calibration is active" : "Default assumptions are active"}</strong>${bike.calibrated ? "Your recent calibration is active." : "A closed loop with coasting descents can fit the bike to your riding."}</div><div class="save-row"><button class="button button--primary" id="save-profile">Save changes</button></div></div></article></section><section class="card card-pad mt-20"><div class="card-title"><div><h2>Calibration</h2></div><button class="button button--primary button--small" id="run-pooled">Run pooled calibration</button></div><details class="calibration-disclosure"><summary>View calibration history</summary><div id="calibration-list"></div></details></section>`;
+  view.innerHTML = `    ${pageHeader("Profile & bike")}<section class="form-layout"><article class="card form-card"><div class="form-section"><h2>Rider</h2><div class="form-grid"><label class="form-field"><span>Age</span><input id="r-age" type="number" value="${esc(fmtNumber(rider.age ?? 40, 0))}"></label><label class="form-field"><span>Weight <em>kg</em></span><input id="r-weight" type="number" step=".5" value="${esc(fmtNumber(rider.weight_kg ?? 75, 1))}"></label><label class="form-field"><span>Height <em>cm</em></span><input id="r-height" type="number" step=".5" value="${esc(fmtNumber(rider.height_cm ?? 178, 1))}"></label><label class="form-field"><span>Resting HR <em>bpm</em></span><input id="r-rest" type="number" value="${esc(fmtNumber(rider.resting_hr ?? 55, 0))}"></label><label class="form-field"><span>Max HR <em>bpm</em></span><input id="r-maxhr" type="number" value="${esc(fmtNumber(rider.max_hr ?? 180, 0))}"></label><label class="form-field">Bike type<select id="r-bike">${["road", "gravel", "mountain", "hybrid", "tt"].map((type) => `<option value="${type}" ${rider.bike_type === type ? "selected" : ""}>${type}</option>`).join("")}</select></label><label class="form-field">Sex<select id="r-sex"><option value="" ${rider.sex ? "" : "selected"}>Not set</option><option value="male" ${rider.sex === "male" ? "selected" : ""}>Male</option><option value="female" ${rider.sex === "female" ? "selected" : ""}>Female</option></select><small class="form-field__hint">Drives the heart-rate calorie estimate and TRIMP load.</small></label></div></div><div class="form-section"><h2>Heart-rate zones</h2><p>Edit the boundaries if you know your own zones. They drive TRIMP and fitness/freshness.</p><div class="zone-grid">${[0,1,2,3,4].map((index) => { const zone = zones[index] || { lo: 0, hi: 0 }; const prevHi = index === 0 ? null : (zones[index - 1] || { hi: 0 }).hi; return `<div class="zone" style="--zc:${ZONE_ACCENTS[index]}"><strong>Z${index + 1}</strong>${index === 0 ? `<input id="z0-lo" type="number" min="30" max="250" value="${esc(fmtNumber(zone.lo, 0))}" aria-label="Zone 1 lower">` : `<span class="zone__inherit" aria-hidden="true">${fmtNumber(prevHi, 0)}</span>`}<span class="zone__dash" aria-hidden="true">to</span><input id="z${index}-hi" type="number" min="30" max="250" value="${esc(fmtNumber(zone.hi, 0))}" aria-label="Zone ${index + 1} upper${index === 0 ? "" : ` (from ${fmtNumber(prevHi, 0)})`}"></div>`; }).join("")}</div></div></article><article class="card form-card"><div class="form-section"><h2>Bike</h2><div class="form-grid form-grid--two"><label class="form-field"><span>Name</span><input id="b-name" type="text" value="${esc(bike.name || "Road bike")}"></label><label class="form-field"><span>Mass <em>kg</em></span><input id="b-mass" type="number" step=".1" value="${esc(fmtNumber(bike.mass_kg ?? 9, 1))}"></label><label class="form-field">Rolling resistance<input id="b-crr" type="number" step=".0001" value="${esc(fmtNumber(bike.crr ?? .005, 4))}" title="Crr — how much the tyres resist rolling. Lower is faster on flats."></label><label class="form-field">Drag area CdA<input id="b-cda" type="number" step=".01" value="${esc(fmtNumber(bike.cdA ?? .35, 2))}" title="CdA = drag coefficient × frontal area. Lower means more aero."></label><label class="form-field">Drivetrain efficiency<input id="b-eff" type="number" step=".01" value="${esc(fmtNumber(bike.drivetrain_efficiency ?? .97, 2))}"></label></div></div><div class="form-section"><div class="calibration-note"><strong>${bike.calibrated ? "Bike calibration is active" : "Default assumptions are active"}</strong>${bike.calibrated ? "Your recent calibration is active." : "A closed loop with coasting descents can fit the bike to your riding."}</div><div class="save-row"><button class="button button--primary" id="save-profile">Save changes</button></div></div></article></section><section class="card card-pad mt-20"><div class="card-title"><div><h2>Calibration</h2></div><button class="button button--primary button--small" id="run-pooled">Run pooled calibration</button></div><details class="calibration-disclosure"><summary>View calibration history</summary><div id="calibration-list"></div></details></section>`;
   const fieldIds = ["r-age", "r-weight", "r-height", "r-rest", "r-maxhr", "b-name", "b-mass", "b-crr", "b-cda", "b-eff", "z0-lo", ...[0,1,2,3,4].map((index) => `z${index}-hi`)];
   fieldIds.forEach((id) => $(`#${id}`)?.addEventListener("input", () => {
     const field = $(`#${id}`);
@@ -1751,6 +1896,9 @@ function renderCalibrationList(calibrations, failure = null) {
 function toast(message) { const el = $("#toast"); el.textContent = message; el.hidden = false; clearTimeout(el._timer); el._timer = setTimeout(() => { el.hidden = true; }, 3800); }
 function init() {
   setupMobileNav();
+  view.addEventListener("animationend", (event) => {
+    if (event.target === view && event.animationName === "view-enter") view.classList.remove("view-enter");
+  });
   document.addEventListener("click", (event) => {
     const overviewRetry = event.target.closest("[data-retry-overview]");
     if (overviewRetry) { event.preventDefault(); retryOverview(overviewRetry.dataset.retryOverview, overviewRetry); return; }
