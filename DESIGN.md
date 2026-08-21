@@ -59,9 +59,9 @@ colors:
 typography:
   display:
     fontFamily: "Archivo"
-    fontSize: "52px"
-    fontWeight: 800
-    letterSpacing: "-0.04em"
+    fontSize: "clamp(28px, 3vw, 34px)"
+    fontWeight: 700
+    letterSpacing: "-0.035em"
   body:
     fontFamily: "IBM Plex Sans"
     fontSize: "14px"
@@ -82,35 +82,27 @@ typography:
     mobile-title: "16px"
     section: "17px"
     card-title: "18px"
-    feature-value: "19px"
+    dropzone-title: "21px"
     panel-title: "20px"
-    dropzone-title: "23px"
+    page-h1-min: "28px"
     drift-value: "23px"
     metric-value: "25px"
-    record-value: "26px"
-    detail-title-min: "29px"
-    insight-value: "30px"
-    display-min: "32px"
+    detail-title: "30px"
+    record-value: "30px"
+    summary-value: "26px"
     mobile-h1: "34px"
-    feature-insight: "36px"
-    mobile-h1-460: "38px"
-    detail-title: "45px"
-    display: "52px"
+    page-h1-max: "34px"
 rounded:
-  micro: "2px"
-  dot: "3px"
-  swatch: "4px"
+  bar: "3px"
+  swatch: "3px"
   leaflet: "6px"
   control: "7px"
   sm: "8px"
   segmented: "9px"
-  icon: "10px"
-  brand: "11px"
+  brand: "9px"
+  icon: "11px"
   md: "12px"
-  badge: "13px"
-  mark: "14px"
   lg: "18px"
-  xl: "26px"
   pill: "999px"
 ---
 
@@ -148,7 +140,7 @@ Functional text never drops below 11px for utility labels or 12px for supporting
 
 ## Layout
 
-The desktop shell is a 252px persistent studio rail and a fluid content column capped at 1480px. The rail is white and quiet; the product does not need a dark frame to feel authoritative. On small screens, the rail becomes a 61px sticky header with a single high-value Import action.
+The desktop shell is a 224px persistent studio rail and a fluid content column capped at 1680px. The rail is white and quiet; the product does not need a dark frame to feel authoritative. A quiet mono foot at the bottom of the rail states "Local data · Private by design". On small screens, the rail becomes a 61px sticky header with a single high-value Import action.
 
 Pages use this rhythm:
 
@@ -163,7 +155,7 @@ The grid uses 20px between plates, 24px internal padding, and 1px hairlines. Car
 
 ### Route ribbon
 
-A route ribbon is a single SVG trace with a soft under-stroke, a measured green line, and two small location nodes. It is a subject-specific signature, not a generic chart. It should remain sparse and never compete with a graph that carries real data.
+A route ribbon is a single SVG trace with a soft under-stroke, a measured green line, and two small location nodes. It is a subject-specific signature, not a generic chart. It should remain sparse and never compete with a graph that carries real data. Route cards project the reference ride's GPS series (fetched once per shape and cached); the route-detail hero projects the route's stored fingerprint shape. Strokes use `vector-effect: non-scaling-stroke` so the line stays hairline-crisp at any card width.
 
 ### Instrument metric
 
@@ -178,7 +170,8 @@ The graph grammar is a calm instrument, in the spirit of a modern data tool: the
 - **Lines.** Data lines are 1.7–2.6px with rounded joins and caps. Sparse series (a few hundred points or fewer) are drawn as gentle monotone curves; dense telemetry stays straight. Points appear on sparse series with a white ring; hovering or seeking enlarges the point at the cursor.
 - **Bars.** Bars have a rounded top, sit at roughly 60% opacity, and rise from their baseline. Bars may carry per-point semantic color.
 - **Uncertainty.** The power band is a soft filled envelope with an ordered diagonal hatch, beneath the estimate line. Bands keep their hatching — a smooth gradient is never used to disguise a wide estimate.
-- **Y-domains.** Charts whose series carry wide bands use robust quantile domains (2–98%) so a genuinely uncertain band stays visible without crushing the signal to the bottom of the plot. The tooltip still reports the true band.
+- **Y-domains.** Charts whose series carry wide bands use robust quantile domains computed from the estimate line first, then union with a clipped band window (`bandClip`, shipped at 0.7 — the band's 15th–85th percentile) so a genuinely uncertain band stays visible without its rarest extremes crushing the signal to the bottom of the plot. The tooltip still reports the true band.
+- **Curves.** Sparse series are monotone curves with control points clamped between their endpoints; segments shorter than ~1.2% of the x-range (two rides on one day) are drawn straight, so a same-day effort change reads as an honest steep step, never a loop.
 - **Tooltip.** Hover opens a dark ink card with a small uppercase head line, then one row per series — a color dot, label, and bold tabular value — and a band line in orange-soft where the estimate carries one. It follows the cursor with clamping and flips to stay inside the plate.
 - **Cursor & hover.** The replay cursor is a solid 1.5px ink line with white-ringed dots on every series. Hover uses a dashed muted hairline instead, so seek and inspect stay visually distinct.
 - **Entrance.** A single ~500ms moment: the plot fades and rises slightly, lines draw in from left to right, bars rise from their baseline. It replays when a filter or picker redraws a chart, which makes control changes feel deliberate. Disabled under `prefers-reduced-motion`.
@@ -197,7 +190,7 @@ The graph grammar is a calm instrument, in the spirit of a modern data tool: the
 
 ## Motion
 
-The page enters with a short, low-distance rise. Cards do not float or bounce. Hover lifts are limited to clickable Route cards and primary actions. Graphs enter with one calm draw-in moment (see Graph frame). Ride replay is the one sustained animation: the map marker, readout, and chart cursors move together because the motion is the explanation.
+The page enters with a short, low-distance rise (320ms, removed from the DOM once finished). Cards do not float or bounce. Hover lifts are limited to clickable Route cards and primary actions. Graphs enter with one calm draw-in moment (see Graph frame). Ride replay is the one sustained animation: the map marker, readout, and chart cursors move together because the motion is the explanation. Descent colouring appears on the replay map only while the descent review section is open — closing it restores the plain route.
 
 `prefers-reduced-motion` disables page movement, shimmer, hover transforms, and replay animation transitions. Keyboard focus uses a visible blue ring with a 2px offset. All clickable rows have a keyboard equivalent.
 
