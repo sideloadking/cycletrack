@@ -313,7 +313,7 @@ def find_coast_segments(records, max_hr=None):
     return segs
 
 
-def find_climb_segments(records, max_hr=None):
+def find_climb_segments(records):
     """Contiguous steep climbing runs at moderate speed.
 
     Returns lists of indices into ``records`` (one list per contiguous run).
@@ -355,7 +355,7 @@ def _segment_integrals(seg, rho):
     return dh, ds, v3dt
 
 
-def _irls_solve(A, b, iters=6):
+def irls_solve(A, b, iters=6):
     """Iteratively reweighted least squares (Huber-like).
 
     A braked descent makes a handful of coast points look like huge losses;
@@ -439,7 +439,7 @@ def _fit_loop_wind(rows, mass, rho):
             0.5 * rho * v_air * v_along * v_all,
         ])
         try:
-            crr, cdA = _irls_solve(A, b_all)
+            crr, cdA = irls_solve(A, b_all)
         except np.linalg.LinAlgError:
             return 1e18
         resid = A @ np.array([crr, cdA]) - b_all
@@ -478,7 +478,7 @@ def _fit_loop_wind(rows, mass, rho):
         0.5 * rho * v_air * v_along * v_all,
     ])
     try:
-        crr, cdA = _irls_solve(A, b_all)
+        crr, cdA = irls_solve(A, b_all)
     except np.linalg.LinAlgError:
         return None
     pred = A @ np.array([crr, cdA])
@@ -811,7 +811,7 @@ def calibrate_climb(records, rider, bike, weather):
     mass = float(rider.get("weight_kg", 75.0)) + float(bike.get("mass_kg", 9.0)) + KIT_MASS_KG
     eff = float(bike.get("drivetrain_efficiency", 0.97))
     cdA = float(bike.get("cdA", 0.35))
-    segs = find_climb_segments(records, rider.get("max_hr") or _default_max_hr(rider))
+    segs = find_climb_segments(records)
     if len(segs) < 1:
         return None
 

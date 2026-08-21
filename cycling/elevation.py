@@ -15,7 +15,7 @@ import numpy as np
 from . import config, geo, lidar, mapmatch
 
 
-def _fill_gaps(values, lats, lons, alt_raw):
+def _fill_gaps(values, alt_raw):
     """Fill missing sampled elevations by interpolation, then device altitude."""
     values = np.asarray(values, dtype=float).copy()
     n = len(values)
@@ -103,7 +103,7 @@ def build_elevation(records, progress_cb=None):
 
     # 3) Fill gaps and apply device altitude as the last resort.
     sampled_arr = np.array([v if v is not None else np.nan for v in sampled], dtype=float)
-    elev = _fill_gaps(sampled_arr, snapped_lats, snapped_lons, alt_raw)
+    elev = _fill_gaps(sampled_arr, alt_raw)
 
     if not np.isfinite(elev).all():
         # Nothing usable anywhere: leave elevation as device values or flat.

@@ -1027,6 +1027,493 @@ def test_fit_timestamp_escape_resyncs():
     print(f"FIT timestamp escape OK: base resynced 1005 -> 1080 via one byte")
 
 
+def test_weather_cache_retries_after_failure():
+    """A failed weather fetch must not be cached forever.
+
+    Regression: any failure (offline, or the archive not yet having the day)
+    cached the default placeholder permanently, so a ride imported within the
+    archive's ~5-day publication delay kept 15 C / calm / 1013 hPa forever.
+    Now: failures are retried after _FAILED_RETRY_S, and recent ride dates
+    (which may backfill) are retried after _RECENT_RETRY_S even on success.
+    """
+    import datetime
+    import pathlib
+    import shutil
+    import tempfile
+    from unittest import mock
+
+    from cycling import weather as weather_mod
+
+    when_unix = datetime.datetime(2024, 6, 1, 10, 0,
+                                  tzinfo=datetime.timezone.utc).timestamp()
+
+    class _FakeResp:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return self._payload
+
+    state = {"clock": 1_700_000_000.0, "network": False, "calls": 0}
+
+    def _fake_get(url, params=None, timeout=None):
+        params = dict(params or {})
+        if params.get("hourly") == "temperature_2m":
+            return _FakeResp({"timezone": "Europe/London",
+                              "hourly": {"time": ["2020-01-01T00:00"],
+                                         "temperature_2m": [0.0]}})
+        state["calls"] += 1
+        if not state["network"]:
+            raise ConnectionError("offline")
+        return _FakeResp({
+            "timezone": "Europe/London",
+            "hourly": {
+                "time": [f"2024-06-01T{i:02d}:00" for i in range(24)],
+                "temperature_2m": [18.0] * 24,
+                "wind_speed_10m": [14.4] * 24,   # km/h -> 4 m/s
+                "wind_direction_10m": [90.0] * 24,
+                "pressure_msl": [1015.0] * 24,
+                "wind_gusts_10m": [18.0] * 24,
+            },
+        })
+
+    weather_mod._TZ_CACHE.clear()
+    tmp = pathlib.Path(tempfile.mkdtemp(prefix="cycling_wx_"))
+    orig_root = weather_mod.config.DATA_ROOT
+    try:
+        weather_mod.config.DATA_ROOT = tmp
+        weather_mod.config.WEATHER_CACHE = tmp / "weather.json"
+        with mock.patch.object(weather_mod.requests, "get", side_effect=_fake_get), \
+                mock.patch.object(weather_mod, "_now",
+                                  lambda: state["clock"]):
+            # 1. Offline: fetch fails, placeholder is cached.
+            w1 = weather_mod.fetch_weather(52.0, -1.5, when_unix)
+            assert w1["source"] == "defaults" and state["calls"] == 1
+            # 2. Still inside the retry window: cache serves, no new call.
+            w2 = weather_mod.fetch_weather(52.0, -1.5, when_unix)
+            assert w2["source"] == "defaults" and state["calls"] == 1
+            # 3. Network restored + past the failed-entry TTL: refetched.
+            state["network"] = True
+            state["clock"] += weather_mod._FAILED_RETRY_S + 1.0
+            w3 = weather_mod.fetch_weather(52.0, -1.5, when_unix)
+            assert w3["source"] == "open-meteo", w3
+            assert abs(w3["temp_c"] - 18.0) < 1e-9 and state["calls"] == 2
+            # 4. Good archive data for an OLD date never expires.
+            state["clock"] += 10 * 24 * 3600.0
+            w4 = weather_mod.fetch_weather(52.0, -1.5, when_unix)
+            assert w4["source"] == "open-meteo" and state["calls"] == 2
+
+            # 5. A RECENT ride date re-checks after the recent TTL even on
+            # success (the archive may backfill the day).
+            recent = (datetime.datetime.now(datetime.timezone.utc)
+                      - datetime.timedelta(days=2))
+            recent = recent.replace(tzinfo=datetime.timezone.utc).timestamp()
+            state["clock"] += 60.0
+            w5 = weather_mod.fetch_weather(52.0, -1.5, recent)
+            assert w5["source"] == "open-meteo" and state["calls"] == 3
+            state["clock"] += weather_mod._RECENT_RETRY_S + 1.0
+            weather_mod.fetch_weather(52.0, -1.5, recent)
+            assert state["calls"] == 4, "recent day must be re-checked"
+    finally:
+        weather_mod.config.DATA_ROOT = orig_root
+        weather_mod.config.WEATHER_CACHE = orig_root / "cache" / "weather.json"
+        shutil.rmtree(tmp, ignore_errors=True)
+    print("weather cache OK: failures retried after TTL, recent days "
+          "re-checked hourly, old good data kept forever")
+
+
+def test_wind_hourly_pairs_stay_aligned():
+    """Hourly wind speed/direction must be filtered jointly.
+
+    Regression: each list dropped its Nones independently, so a hole in only
+    one of them shifted that series by an hour relative to the other and the
+    interpolated wind paired one hour's speed with another hour's direction.
+    """
+    import pathlib
+    import shutil
+    import tempfile
+    from unittest import mock
+
+    from cycling import weather as weather_mod
+
+    when_unix = 1_700_000_000.0
+
+    class _FakeResp:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"timezone": "Europe/London",
+                    "hourly": {
+                        "time": [f"2023-11-14T{i:02d}:00" for i in range(24)],
+                        "temperature_2m": [15.0] * 24,
+                        # speed[h] = h+1 as a marker, None at hour 5
+                        "wind_speed_10m": [float(h + 1) * 3.6 if h != 5 else None
+                                           for h in range(24)],
+                        # dir[h] = h*10 as a marker, None at hour 15
+                        "wind_direction_10m": [float(h) * 10.0 if h != 15 else None
+                                               for h in range(24)],
+                        "pressure_msl": [1013.0] * 24,
+                        "wind_gusts_10m": [0.0] * 24,
+                    }}
+
+    weather_mod._TZ_CACHE.clear()
+    tmp = pathlib.Path(tempfile.mkdtemp(prefix="cycling_wxpair_"))
+    orig_root = weather_mod.config.DATA_ROOT
+    try:
+        weather_mod.config.DATA_ROOT = tmp
+        weather_mod.config.WEATHER_CACHE = tmp / "weather.json"
+        with mock.patch.object(weather_mod.requests, "get",
+                               return_value=_FakeResp()), \
+                mock.patch.object(weather_mod, "_now", lambda: 0.0):
+            w = weather_mod.fetch_weather(52.0, -1.5, when_unix)
+        spd = w["wind_speed_hourly"]
+        drc = w["wind_dir_hourly"]
+        assert len(spd) == len(drc) == 22, (len(spd), len(drc))
+        # After joint filtering, entry i must still be the same hour in both
+        # lists: speed marker (h+1) vs direction marker (h*10) agree.
+        for s_kmh, d in zip(spd, drc):
+            h_speed = round(s_kmh * 3.6 / 3.6) - 1     # back to the marker h
+            h_dir = round(d / 10.0)
+            assert h_speed == h_dir, (s_kmh, d, h_speed, h_dir)
+    finally:
+        weather_mod.config.DATA_ROOT = orig_root
+        weather_mod.config.WEATHER_CACHE = orig_root / "cache" / "weather.json"
+        shutil.rmtree(tmp, ignore_errors=True)
+    print("wind hourly pairs OK: speed and direction stay hour-aligned "
+          "across nulls")
+
+
+def test_route_grouping_survives_different_start_point():
+    """The same loop started at different points along it must group.
+
+    Regression: fingerprints are resampled from each ride's own start, so
+    offset starts produced offset grids and nearest-POINT distance grew with
+    the offset (a 30%-perimeter offset failed the 25 m threshold). Matching
+    against the polyline's segments collapses that to the chord sagitta.
+    """
+    import math
+
+    from cycling import routes as routes_mod
+
+    def make_loop(size_km=5.0, per_side=400):
+        s = size_km * 1000.0
+        corners = [(0, 0), (s, 0), (s, s), (0, s), (0, 0)]
+        raw = []
+        for (x1, y1), (x2, y2) in zip(corners, corners[1:]):
+            steps = max(2, per_side)
+            for i in range(steps):
+                t = i / steps
+                raw.append((x1 + (x2 - x1) * t, y1 + (y2 - y1) * t))
+        lat0, lon0 = 52.0, -1.5
+        lat_m = 1.0 / 111320.0
+        lon_m = 1.0 / (111320.0 * math.cos(math.radians(lat0)))
+        return [(lat0 + y * lat_m, lon0 + x * lon_m) for x, y in raw]
+
+    loop = make_loop()
+    fp_a = routes_mod.fingerprint(*zip(*loop))
+    for frac in (0.30, 0.45):
+        off = int(len(loop) * frac)
+        shifted = loop[off:] + loop[:off]
+        fp_b = routes_mod.fingerprint(*zip(*shifted))
+        sim = routes_mod.route_similarity(fp_a, fp_b)
+        assert sim is not None, f"length prefilter rejected at offset {frac}"
+        assert sim["fwd"][0] < routes_mod.ROUTE_MATCH_M, (frac, sim["fwd"])
+        assert routes_mod.is_same_route(sim), \
+            f"same loop at {frac:.0%} start offset must group"
+
+    # Different routes must still stay separate (both directions of travel
+    # still work — covered by test_route_detection).
+    other = make_loop(size_km=8.0)
+    sim = routes_mod.route_similarity(fp_a, routes_mod.fingerprint(*zip(*other)))
+    assert not routes_mod.is_same_route(sim)
+    print("route grouping OK: same loop groups from any start point; "
+          "different loops stay separate")
+
+
+def test_fit_compressed_mid_timestamp_and_crc():
+    """Compressed-timestamp messages must decode fields defined after the
+    timestamp (shifted onto the wire), skip pre-base messages, and report
+    CRC validity softly.
+
+    Regression: fields after an omitted timestamp field were read at their
+    unshifted offsets and silently lost; a compressed message before any
+    base timestamp was dated to the FIT epoch; CRCs were never checked
+    (Wahoo writes invalid ones, so the check must be a flag, not a gate).
+    """
+    import struct
+    import tempfile
+    from pathlib import Path
+
+    from cycling import fit_parser
+
+    # Definition: local type 0, global 20 (record); fields in order:
+    # lat(0,size4)@0, lon(1,size4)@4, timestamp(253,size4)@8, speed(6,2)@12.
+    defn = (bytes([0x40, 0x00, 0x00]) + struct.pack("<H", 20) + bytes([4])
+            + bytes([0, 4, 0x05, 1, 4, 0x05, 253, 4, 0x0C, 6, 2, 0x84]))
+    lat, lon = 520000000, -15000000
+    full_msg = (bytes([0x00]) + struct.pack("<ii", lat, lon)
+                + struct.pack("<I", 1000) + struct.pack("<H", 7000))
+    # Compressed message omits the timestamp bytes; speed shifts to offset 8.
+    comp_msg = (bytes([0x80 | 0x03]) + struct.pack("<ii", lat, lon)
+                + struct.pack("<H", 5000))
+    section = defn + full_msg + comp_msg
+
+    def build(section_bytes, crc=True):
+        head = (bytes([14, 0x10]) + struct.pack("<H", 0x0010)
+                + struct.pack("<I", len(section_bytes)) + b".FIT")
+        blob = head + struct.pack("<H", fit_parser.fit_crc16(head) if crc else 0)
+        blob += section_bytes
+        return blob + struct.pack("<H", fit_parser.fit_crc16(blob) if crc else 0)
+
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / "mid.fit"
+        p.write_bytes(build(section))
+        records, meta = fit_parser.parse_fit(p)
+
+        assert len(records) == 2, f"message stream desynced: {len(records)}"
+        r_full, r_comp = records
+        assert abs(r_full["speed"] - 7.0) < 1e-9, r_full
+        assert r_full["t"] == fit_parser.FIT_EPOCH_UNIX + 1000
+        # The compressed message's post-timestamp field must decode.
+        assert abs(r_comp["speed"] - 5.0) < 1e-9, \
+            f"post-timestamp field lost: {r_comp}"
+        assert r_comp["t"] == fit_parser.FIT_EPOCH_UNIX + 1003
+        assert meta.get("crc_valid") is True
+
+        # Corrupting a byte must flip the flag, not crash the parse.
+        bad = bytearray(build(section))
+        bad[len(bad) // 2] ^= 0xFF
+        p2 = Path(td) / "bad.fit"
+        p2.write_bytes(bytes(bad))
+        _, bad_meta = fit_parser.parse_fit(p2)
+        assert bad_meta.get("crc_valid") is False
+
+        # Stored CRC of 0 means "unchecked" per the spec: no verdict.
+        nocrc = bytearray(build(section))
+        nocrc[-2:] = b"\x00\x00"
+        p3 = Path(td) / "nocrc.fit"
+        p3.write_bytes(bytes(nocrc))
+        _, m3 = fit_parser.parse_fit(p3)
+        assert "crc_valid" not in m3
+
+        # A compressed message before any base timestamp is skipped, never
+        # dated to the FIT epoch (1989).
+        comp_only = defn + comp_msg
+        p4 = Path(td) / "nobase.fit"
+        p4.write_bytes(build(comp_only))
+        records4, _ = fit_parser.parse_fit(p4)
+        assert records4 == [], records4
+    print("FIT compressed-timestamp + CRC OK: post-ts fields decode, "
+          "pre-base skipped, crc_valid is a soft flag")
+
+
+def test_upload_name_sanitized():
+    """Client-supplied upload names must reduce to a safe basename.
+
+    Regression: the raw name was joined under IMPORT_DIR, so
+    '../../../evil.fit' wrote the upload outside the imports directory.
+    """
+    from cycling import server
+
+    for evil, want in [
+        ("../../../evil.fit", "evil.fit"),
+        ("..\\..\\windows.fit", "windows.fit"),
+        ("/etc/passwd", "passwd"),
+        ("", "ride.fit"),
+        (None, "ride.fit"),
+        ("....", "ride.fit"),
+        ("a" * 500, "a" * 120),
+        ("sub/dir/ride.fit", "ride.fit"),
+        ("normal ride.fit", "normal ride.fit"),
+    ]:
+        got = server._safe_upload_name(evil)
+        assert got == want, (evil, got, want)
+        assert "/" not in got and "\\" not in got and ":" not in got
+        assert not got.startswith(".")
+        joined = server.config.IMPORT_DIR / f"job123_{got}"
+        assert str(joined.resolve()).startswith(
+            str(server.config.IMPORT_DIR.resolve()) + chr(92)) or \
+            str(joined.resolve()).startswith(
+                str(server.config.IMPORT_DIR.resolve()) + "/") or \
+            joined.resolve().parent == server.config.IMPORT_DIR.resolve(), joined
+    print("upload name OK: traversal and dotfiles collapse to safe basenames")
+
+
+def test_local_host_middleware():
+    """Only loopback Host headers may talk to the engine (DNS-rebinding
+    pages resolve a hostile name to 127.0.0.1; their Host header gives
+    them away)."""
+    from cycling import server
+
+    for host in ("127.0.0.1:8347", "localhost:8347", "[::1]:8347",
+                 "127.0.0.1", "localhost"):
+        assert server._host_allowed(host), host
+    for host in ("evil.example.com", "evil.example.com:8347", "",
+                 None, "127.0.0.1.evil.example.com", "local-host"):
+        assert not server._host_allowed(host), host
+    print("host middleware OK: loopback allowed, rebinding names rejected")
+
+
+def test_pick_port_binds_and_hands_off():
+    """pick_port must return a still-bound socket (handed to uvicorn, no
+    bind-close-rebind race) and fail loudly when nothing is free."""
+    import socket as socket_mod
+    import sys
+
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from main import pick_port
+
+    sock, port = pick_port(48900)
+    assert sock.getsockname()[1] == port
+    # The socket is still bound: rebinding it must fail.
+    probe = socket_mod.socket(socket_mod.AF_INET, socket_mod.SOCK_STREAM)
+    try:
+        try:
+            probe.bind(("127.0.0.1", port))
+            raise AssertionError(f"port {port} was not left bound")
+        except OSError:
+            pass
+    finally:
+        probe.close()
+        sock.close()
+
+    # Occupy 50 consecutive ports: pick_port must give up loudly.
+    blockers = []
+    base = 49100
+    try:
+        for p in range(base, base + 50):
+            b = socket_mod.socket(socket_mod.AF_INET, socket_mod.SOCK_STREAM)
+            b.bind(("127.0.0.1", p))
+            blockers.append(b)
+        try:
+            pick_port(base)
+            raise AssertionError("pick_port succeeded on a full range")
+        except SystemExit as e:
+            assert "No free port" in str(e), e
+    finally:
+        for b in blockers:
+            b.close()
+    print("pick_port OK: bound socket handed off, exhausted range fails loudly")
+
+
+def test_opentopo_rate_interval():
+    """OpenTopoData documents 'max 1 call per second'; the DEM fallback must
+    sleep at least that between batches (a 429 is swallowed, so exceeding
+    the limit would silently lose elevation points)."""
+    from unittest import mock
+
+    from cycling import config, lidar
+
+    assert lidar.OPENTOPO_MIN_INTERVAL_S >= 1.0, lidar.OPENTOPO_MIN_INTERVAL_S
+
+    provider = lidar.OpenTopoProvider()
+    provider.cache = {}   # force the network path
+    sleeps = []
+
+    class _FakeResp:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"results": [
+                {"elevation": 100.0 + j} for j in range(90)]}
+
+    n_points = 180  # two batches
+    lats = [52.0 + i * 1e-4 for i in range(n_points)]
+    lons = [-1.5 + i * 1e-4 for i in range(n_points)]
+    with mock.patch.object(provider.session, "get",
+                           return_value=_FakeResp()) as get_mock, \
+            mock.patch.object(lidar.time, "sleep",
+                              side_effect=lambda s: sleeps.append(s)):
+        out = provider.sample(lats, lons)
+    assert len(out) == n_points and all(v is not None for v in out)
+    assert get_mock.call_count == 2
+    assert len(sleeps) == 2 and all(s >= 1.0 for s in sleeps), sleeps
+    print(f"OpenTopoData OK: {get_mock.call_count} batches, sleeps "
+          f"{sleeps} s >= documented 1 req/s")
+
+
+def test_pooled_fits_serialize():
+    """An import's inline pooled fit and the server's debounced background
+    fit must never overlap: the pooled lock serializes them."""
+    import threading
+    import time
+    from unittest import mock
+
+    from cycling import pipeline
+
+    state = {"concurrent": 0, "max_concurrent": 0}
+
+    def slow_pooled(segments, rider, bike, weather_by_ride):
+        state["concurrent"] += 1
+        state["max_concurrent"] = max(state["max_concurrent"],
+                                      state["concurrent"])
+        time.sleep(0.15)
+        state["concurrent"] -= 1
+        return None
+
+    def fake_collect(rider):
+        return {"1": [[]], "2": [[]]}   # >= 2 rides so the fit is attempted
+
+    with mock.patch.object(pipeline, "collect_coast_segments_by_ride",
+                           side_effect=fake_collect), \
+            mock.patch.object(pipeline.power_mod, "calibrate_pooled",
+                              side_effect=slow_pooled):
+        threads = [threading.Thread(target=pipeline.try_pooled_calibrate,
+                                    args=({}, {})) for _ in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+    assert state["max_concurrent"] == 1, state
+    print("pooled serialization OK: 4 concurrent attempts ran one at a time")
+
+
+def test_normalized_power_trailing_window():
+    """Normalized power must use a trailing 30 s window (Coggan), verified
+    against a brute-force trailing implementation."""
+    from cycling import metrics as metrics_mod
+
+    rng = np.random.RandomState(3)
+    n = 900
+    ts = np.sort(rng.uniform(0, 1800, n))
+    ts[0] = 0.0
+    w = rng.uniform(0, 400, n)
+
+    got = metrics_mod._normalised_power(w, ts)
+
+    # Brute force: trailing 30 s mean at each sample, then time-average of
+    # the 4th powers, then 4th root.
+    smooth = np.empty(n)
+    for i in range(n):
+        lo = np.searchsorted(ts, ts[i] - 30.0, side="left")
+        seg_t = ts[lo:i + 1]
+        seg_w = w[lo:i + 1]
+        if len(seg_t) < 2:
+            smooth[i] = w[i]
+            continue
+        cum = np.concatenate(([0.0], np.cumsum(
+            np.diff(seg_t) * 0.5 * (seg_w[:-1] + seg_w[1:]))))
+        span = seg_t[-1] - seg_t[0]
+        smooth[i] = cum[-1] / span if span > 0 else w[i]
+    w4 = smooth ** 4
+    dt = np.maximum(np.diff(ts), 0.0)
+    integral = float(np.sum(dt * 0.5 * (w4[:-1] + w4[1:])))
+    want = (integral / (ts[-1] - ts[0])) ** 0.25
+    assert abs(got - want) < 1e-6 * max(1.0, want), (got, want)
+
+    # Constant power still lands on the mean (M15's property).
+    flat = np.full(600, 200.0)
+    assert abs(metrics_mod._normalised_power(flat, np.arange(600.0)) - 200.0) < 1e-9
+    print(f"normalized power OK: trailing window matches brute force "
+          f"({got:.2f} W); constant power -> mean")
+
+
 def test_server_hardening_caps():
     """The job dict must stay bounded (finished jobs dropped first), and the
     import-dir pruner must remove only stale uploads."""
@@ -1095,4 +1582,14 @@ if __name__ == "__main__":
     test_learned_classifier()
     test_pedal_tag_recovers_power()
     test_pooled_calibration_authoritative()
+    test_weather_cache_retries_after_failure()
+    test_wind_hourly_pairs_stay_aligned()
+    test_route_grouping_survives_different_start_point()
+    test_fit_compressed_mid_timestamp_and_crc()
+    test_upload_name_sanitized()
+    test_local_host_middleware()
+    test_pick_port_binds_and_hands_off()
+    test_opentopo_rate_interval()
+    test_pooled_fits_serialize()
+    test_normalized_power_trailing_window()
     print("\nAll backend checks passed.")

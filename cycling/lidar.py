@@ -187,6 +187,12 @@ class LidarProvider:
 # Tier 2 — OpenTopoData (EU-DEM 25 m / SRTM 90 m)
 # ---------------------------------------------------------------------------
 
+# OpenTopoData documents "max 1 call per second" (and 1000 calls/day). Sleep
+# just over a second between batches so the DEM fallback never trips the
+# limit — a 429 is swallowed by the batch handler, so exceeding it would
+# silently punch holes in the ride's elevation.
+OPENTOPO_MIN_INTERVAL_S = 1.05
+
 
 class OpenTopoProvider:
     def __init__(self, dataset=None):
@@ -243,7 +249,7 @@ class OpenTopoProvider:
                 self._save_cache()
             except Exception:
                 pass
-            time.sleep(0.4)
+            time.sleep(OPENTOPO_MIN_INTERVAL_S)
         return out
 
 
